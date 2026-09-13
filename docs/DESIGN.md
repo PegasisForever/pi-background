@@ -55,6 +55,7 @@ tolerance constant pulled out of the air. An unproven fallback is untested code 
 one day run instead of the correct path, and you will not know it did. If you think a case
 is possible, prove it occurs before handling it. If you cannot prove it, let it fail
 loudly (C7) and build the handling when the log shows you the real shape of it.
+
 ---
 
 ## §1. The model
@@ -67,7 +68,7 @@ job
 ├── title     the model's own name for it, required
 ├── expected  seconds you expect it to take, or null for a service (an agent may not be null)
 ├── status    running | done | failed | stopped
-├── waiting   true while the model is still waiting for this command's result (§4.1)
+├── foreground  true while the model is still waiting for this command's result (§4.1)
 ├── exitCode  a command's exit status, or null when it was killed
 ├── reason    set when it says more than the status and the code do
 └── dir       ~/.pi/agent/jobs/<id>/
@@ -170,6 +171,9 @@ the path it needs to act, you get one sentence and the exit code. A command that
 shows you nothing, because the absence is the answer and `(no output)` is a line you would have to
 read. An agent's output is never shown, to either of you: it is pi's JSON event stream.
 
+**The model's half is written in sentences, and carries no markdown.** Your half stays terse: it
+is read at a glance, not reasoned about.
+
 | Surface | The model | You |
 |---|---|---|
 | A command that ended in front of it | its last lines, the exit code, the path | the same last lines, then `Finished in 12s.` / `Exit code: 0` |
@@ -179,26 +183,13 @@ read. An agent's output is never shown, to either of you: it is pi's JSON event 
 | `job_stop` | final state, elapsed, path | the tool line alone; the footer count is the rest of the answer |
 | A completion | the tagged record and the path | one sentence, and the exit code for a command |
 
-Two surfaces have no model side at all. A footer status counts what is live, and is cleared when
-nothing is:
-
-```
-2 commands, 1 subagent
-```
+Two surfaces have no model side at all. A footer status counts what is live and is cleared when
+nothing is; `/jobs` lists them as a table, as a durable entry, each column sized to its widest
+cell, durations right-aligned, the heading dimmed. Both are transcribed in
+`docs/MODEL-FACING-TEXT.md` §E.
 
 **The status key is `pi-background`**, the extension's own name, so `pi-powerline-footer` can lift
-it out of its overflow row into a segment of its own with a `customItems` entry naming that key. A
-widget of our own below the editor was the first version; it took a row of its own next to the
-powerline bar, which is placed below the editor too, and the two competed for the same height.
-
-`/jobs` lists them as a table, as a durable entry: `job id`, `type`, `title`, `elapsed`, `expected`,
-each column sized to its widest cell, durations right-aligned, the heading dimmed.
-
-```
-job id                                type     title             elapsed  expected
-01a09a13-04cf-73d2-88ce-082fbf7c871f  command  deploy staging       3m58s     600s
-01a09a13-04d2-73d2-88ce-0831f03dcabb  agent    auth diff review     1h10m    7200s
-```
+it out of its overflow row into a segment of its own with a `customItems` entry naming that key.
 
 No status column: a listed job is running by definition. `appendEntry` writes a `custom` session
 entry, which pi keeps out of LLM context by design, so this costs no tokens however often you
@@ -214,12 +205,6 @@ than a truncated command, and a bad one is all you get.
 The model-facing half of every string in this table is transcribed verbatim in
 `docs/MODEL-FACING-TEXT.md`, alongside yours, so the boundary can be audited without reading the
 code.
-
-**The model's half is written in sentences, and carries no markdown.** An earlier version used
-labelled lines — `job id: …`, `elapsed: …`, `exit code: …` — which read as a form to be parsed
-rather than a report to be understood, and which pi-context-fold did not share. One style across
-both extensions is worth more than the two characters a label saves. Your half stays terse,
-because it is read at a glance and not reasoned about.
 
 There is still no `job_logs`. Output is one file and pi has `read`. Live status across several
 jobs is not one file, which is the difference.
@@ -267,7 +252,7 @@ dialog calls return at once instead of waiting for an answer.
 ### §3.2 Child session and resume
 
 ```
---session-dir ~/.pi/jobs/<id>/ --session-id <id>
+--session-dir ~/.pi/agent/jobs/<id>/ --session-id <id>
 ```
 
 This is the resume point, not a forensic extra. A second `pi --mode json` process started with
@@ -474,9 +459,8 @@ the first tick the `2x` mark, which is what §1 promises. When the wait ended be
 interrupted rather than because the estimate passed, no overrun has been reported yet, so
 `overrunAt` is left unset and the first tick reports normally.
 
-This extension used to run no timers of its own, which was worth saying while a deadline could be
-expressed as `AbortSignal.timeout`. A repeating check-in cannot be, so there is now one timer per
-awaited job and one `clearInterval` that must stay next to the code that closes the output file.
+There is one timer per awaited job, and one `clearInterval` that must stay next to the code that
+closes the output file.
 
 **The five minutes is a floor on noise, not a schedule.** `expectedSeconds: 1` on a job that runs
 an hour would otherwise send 3,600 messages and wake the agent for every one. With the floor it
@@ -582,8 +566,8 @@ prompt, `"rpc"` for a client, `"extension"` for `sendUserMessage` — so anythin
 client resets the count and our own nudge does not. Testing against `"interactive"` alone would
 never reset under RPC, making the limit per session rather than per turn.
 
-The cap is `5`, a constant in the source. One was too few: an agent that is nudged, does the thing,
-and then stops mid-promise again is the case the feature exists for.
+The cap is `5` (§13). One was too few: an agent that is nudged, does the thing, and then stops
+mid-promise again is the case the feature exists for. Nothing distinguishes 5 from 3 or 10.
 
 ### §7.3 The classifier
 
@@ -658,7 +642,7 @@ The nudge text is an ordinary user message and stays in the transcript.
   "status": "active" }
 ```
 
-One predicate, refreshed from one function that four call sites hit — `session_start`,
+One predicate, refreshed from one function that five call sites hit — `session_start`,
 `agent_start`, `agent_settled`, and every job start and finish:
 
 ```
@@ -705,15 +689,11 @@ built, and needing no forwarding rules to survive an `ssh` hop.
   "nudgeModel": "openai-codex/gpt-5.6-luna",
   "nudgeThinking": "low",
 
-  // Provider for isolated subagents. Absent means isolation:"isolated" is not offered.
+  // Provider for isolated subagents. Absent means isolation: "isolated" is refused when used.
   "isolated": {
     "create":       "rmng-sandbox-create",
     "instructions": "Work happens in /home/rmng/work. Read a file there with: <ssh> cat <path>. The sandbox stays up after the job ends; run `rmng-sandbox-destroy <sandbox id>` when you are done with it."
-  },
-
-  // The log. null or absent means ~/.pi/agent/pi-background.log; debug adds the noisy records.
-  "logFile": null,
-  "debug": false
+  }
 }
 ```
 
@@ -734,32 +714,35 @@ scalars, so shallow and deep agree.
 Read once, at `session_start`. `/reload` re-runs `session_start`, so `/reload` picks up an edit.
 There is no file watcher.
 
-The merged object is validated against one typebox schema, so an unknown key at any depth, a wrong
-type and an illegal `nudgeThinking` value are all loud failures. A malformed or unreadable file is
-one too: no default, no partial load. A half-validated config is worse than none, because the loud
-path advertises coverage the code does not have. **No file at all is not a failure** — it means no nudge, no
-isolated jobs, and no nesting; local command jobs and local subagents work with no configuration.
+The merged object is validated against one typebox schema, so an unknown key at any depth, a
+wrong type and an illegal `nudgeThinking` value are all loud failures. A malformed or unreadable
+file is one too: no default, no partial load. The unknown key is found **before** the schema
+runs, because a schema checker reports only "must not have additional properties" and never names
+the key, and the key's name is the one thing a typo needs. **No file at all is not a failure** —
+it means no nudge, no isolated jobs and no nesting; local command jobs and local subagents work
+with no configuration.
 
-The merged object is validated against the schema, but the **unknown key is found before the
-schema runs**, because a schema checker reports only "must not have additional properties" and
-never names the key — and the key's name is the one thing a typo needs. The same code is in
-pi-context-fold.
+**The config read is the last thing `session_start` does, and nothing registers behind it.** Pi
+catches a throw from a handler and carries on, so a tool registered after the read disappears for
+the whole session the first time the read fails — one mistyped key, and the model has no tools
+and a system prompt that still names them. Reproduced. Tools are registered when the extension
+loads; what a tool does without a setting is decided when it is called, and said out loud (C7).
+`run_agent` is always offered and refuses when there is no depth left; `isolation` is always a
+parameter and refuses when no provider is configured.
 
 The project file is read without a trust check (§12).
 
-### §9.5 The log
+### §9.5 No log
 
-One JSON line per event, appended to `logFile`, default `~/.pi/agent/pi-background.log`. No
-levels, no rotation, no size cap. The events are `start`, `detach`, `overrun`, `end` and `stop`
-for a job, and `nudge` for a classifier nudge that fired.
+There is none. One was added because pi-context-fold has one, and consistency between the two
+extensions is not one of the ten principles. It never ran in anger, and one of the two keys it
+brought with it — `debug` — had no reader at all: C10 forbids a mechanism for a case that has not
+been seen, and C3 forbids a key with no reason to turn it.
 
-It exists because a background job's failure is invisible by the time you notice it: the
-notification has scrolled away, the session may have ended, and the output file says what the
-command printed but not when the job started, overran or was stopped. A write that fails throws
-where it is called; nothing substitutes a value for it (C10). `debug` is reserved for per-turn
-records and is not yet used by anything here.
-
-The same `log.ts` is in pi-context-fold, byte for byte.
+The argument for one is real and specific to this extension: a background job's failure is
+invisible by the time you notice it, because the notification has scrolled away and the session
+may be over. When that costs something, the log comes back with the failure that earned it, and
+the shape of the record will come from that failure rather than from a guess (C10).
 
 ---
 
@@ -770,14 +753,14 @@ The same `log.ts` is in pi-context-fold, byte for byte.
 | `index.ts` | config, flag, tool registration and descriptions, session events, activity file, nudge |
 | `jobs.ts` | registry, `start`, `stop`, `finalise` → status + notify + activity, output files |
 | `command-job.ts` | pi's shell backend, environment, output |
-| `log.ts` | one JSON line per event; the same file in pi-context-fold |
 | `shown.ts` | the TUI components both readers' halves are drawn with; the same file in pi-context-fold |
 | `agent-job.ts` | argv for local and ssh, sandbox create, stdin, stdout pipe, result extraction |
 
-Four files. Tool descriptions and both renderers sit next to the registration they describe, and
+Six files. Tool descriptions and both renderers sit next to the registration they describe, and
 the notification is sent inside `finalise`, so §5.3's "one place" is structural rather than a
-convention someone can edit away. Every string either reader sees is built in `jobs.ts`, one
-function per message, which is what makes `MODEL-FACING-TEXT.md` checkable against the source.
+convention someone can edit away. Every string about a job is built in `jobs.ts`, one function per
+message; the tool and parameter descriptions sit with the registration, and the nudge sits with
+the classifier that produces it. `docs/MODEL-FACING-TEXT.md` transcribes all three.
 
 ---
 
@@ -859,9 +842,32 @@ Written down so that when one bites, the real shape is handled rather than the i
     They are kept because the path in a transcript has to stay readable (§12.2), and deleting them
     is a job for something outside this extension.
 15. **A foreground command holds the turn.** The tool call does not return for up to 180 seconds.
-    That is what a shell tool does, but it is new here: this extension used to return at once
-    every time, and a session can now sit inside one tool call for three minutes.
+    That is what a shell tool does, and it means a session can sit inside one tool call for three
+    minutes.
 16. **A command that hides its output until the end reports nothing at the handoff.** The last
     lines come from the `output` file, so a command that buffers — many do when their stdout is
     not a terminal — hands off with an empty body and the model sees only the path.
 
+
+---
+
+## §13. The constants, and what is behind each
+
+C9 says numbers come from the log and from real sessions, not from intuition. Most of these are
+intuition, and saying so is the point of this table: a number presented as settled when nothing
+measured it is worse than a number admitted to be a guess, because only the second one gets
+revisited.
+
+| Constant | Value | Behind it |
+|---|---|---|
+| `CLASSIFIER_MAX_TOKENS` | 2048 | **Measured.** §7.3 has the table and two falsifications: at 64 the answer truncated mid-sentence, at 512 one model returned empty after 506 reasoning tokens. |
+| `FOREGROUND_MAX_SECONDS` | 180 | **Chosen.** It is where a shell command stops feeling like one. Nothing measured it, and a day of real work is what would. |
+| `QUIET_MS` | 5 minutes | **Chosen.** The argument in §5.2a justifies a floor, not this floor. |
+| `TAIL_LINES` / `TAIL_BYTES` | 10 / 1000 | **Chosen.** Enough to see how a command ended, small enough to pay for on every notification. |
+| `TAIL_WINDOW` | 64 KiB | **Chosen.** Large enough that ten lines are always inside it, small enough not to read a build log into memory. |
+| `MAX_NUDGES_PER_TURN` | 5 | **Partly measured.** One was tried and was too few. Nothing distinguishes 5 from 3 or 10. |
+| `CLASSIFIER_TIMEOUT_MS` | 60 s | **Chosen.** A classification was measured at 1.8 s; this only has to bound a stalled connection. |
+| `TAIL_BYTES` in `agent-job.ts` | 4 MiB | **Chosen.** Enough to hold any final assistant message; a larger one should be a loud failure. |
+
+When one of these is wrong, the log that shows it does not exist yet (§9.5). That is the honest
+state, and it is why none of them is a configuration key.

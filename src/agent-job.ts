@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
-import { closeSync, createWriteStream, openSync, readSync, statSync, writeFileSync } from "node:fs";
+import { createWriteStream, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { type Job, type Outcome, write } from "./jobs.ts";
+import { type Job, type Outcome, readTail, write } from "./jobs.ts";
 
 export interface Sandbox {
 	id: string;
@@ -48,7 +48,7 @@ export function runAgent(job: Job, run: AgentRun): Promise<Outcome> {
 		const child = spawn(cmd as string, args as string[], {
 			cwd: run.ssh ? undefined : run.cwd,
 			stdio: ["pipe", "pipe", "pipe"],
-			signal: job.signal,
+			signal: job.stop.signal,
 		});
 		let failure: string | undefined;
 		child.stdout.on("data", (chunk: Buffer) => write(job, chunk));
@@ -82,17 +82,9 @@ const TAIL_BYTES = 4 * 1024 * 1024;
 
 function finalText(job: Job, required: boolean): string {
 	const path = join(job.dir, "output");
-	const size = statSync(path).size;
-	const start = Math.max(0, size - TAIL_BYTES);
-	const buf = Buffer.alloc(size - start);
-	const fd = openSync(path, "r");
-	try {
-		readSync(fd, buf, 0, buf.length, start);
-	} finally {
-		closeSync(fd);
-	}
-
-	const lines = buf.toString("utf8").split("\n");
+	const window = readTail(path, TAIL_BYTES);
+	const start = Math.max(0, statSync(path).size - TAIL_BYTES);
+	const lines = window.split("\n");
 	for (let i = lines.length - 1; i >= 0; i--) {
 		const line = lines[i] as string;
 		if (line === "" || !line.startsWith("{")) continue;

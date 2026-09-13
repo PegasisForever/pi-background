@@ -65,15 +65,14 @@ in the background. See section C for what happens when a command passes it.
 
 #### `run_agent`
 
-Registered only when the session has depth left.
+Always registered. A session with no depth left still has it, and the call is refused when it is
+made.
 
-> Start a subagent on a task and return immediately. The result is delivered to you automatically when it finishes, so end your turn rather than polling or sleeping. The subagent starts with no context: put everything it needs in the task. It returns a job id, which job_list, job_stop and resume_agent take.
+> Start a subagent on a task and return immediately. The result is delivered to you automatically when it finishes, so end your turn rather than polling or sleeping. The subagent starts with no context: put everything it needs in the task. It returns a job id, which job_list, job_stop and resume_agent take. Pass isolation "isolated" to run it in a fresh sandbox; what to do with that sandbox afterwards comes back with the job id.
 
-Then, when `isolated` is configured, a blank line and **your `isolated.instructions` string
-verbatim**. This is the one piece of model-facing text that comes from config rather than source.
-The value in the test config reads:
-
-> An isolated subagent runs in a throwaway sandbox under /tmp/sandboxes/&lt;sandbox id&gt;. It stays up after the job ends; run `rm -rf /tmp/sandboxes/&lt;sandbox id&gt;` when you no longer need it.
+Nothing here comes from the config file. Your `isolated.instructions` string used to be appended
+to this description, which every turn paid for whether or not a sandbox was ever made; it is now
+returned with the job that actually made one, under `run_agent`'s result below.
 
 | Parameter | Description |
 |---|---|
@@ -81,7 +80,7 @@ The value in the test config reads:
 | `title` | Short title for this job, shown in the job list |
 | `expectedSeconds` | Roughly how long you expect this to take, in seconds. Nothing is killed at that mark: if it is still running you are told so, and you decide whether to let it continue. |
 | `cwd` | Working directory |
-| `isolation` | isolated runs in a fresh sandbox — **this row exists only when `isolated` is configured**; with no provider the parameter is not registered at all |
+| `isolation` | isolated runs in a fresh sandbox; needs a sandbox provider to be configured |
 
 #### `resume_agent`
 
@@ -95,10 +94,6 @@ Registered with `run_agent`.
 | `task` | The follow-up instruction for the subagent |
 | `title` | Short title for this job, shown in the job list |
 | `expectedSeconds` | Roughly how long you expect this to take, in seconds. Nothing is killed at that mark: if it is still running you are told so, and you decide whether to let it continue. |
-
-This is a separate tool rather than a `resumeFrom` parameter on `run_agent` so that two whole
-classes of error cannot happen: a resume can no longer be given a `cwd` or an `isolation` that
-contradicts the job it is continuing.
 
 #### `job_list`
 
@@ -283,10 +278,14 @@ Agent <title> is started in the background. You will be notified when it finishe
 Its job id is <job id>.
 ```
 
-An isolated subagent adds a third line:
+An isolated subagent adds a third line, and then a blank line and **your
+`isolated.instructions` string verbatim** — the one piece of model-facing text that comes from
+the config file rather than the source, delivered where a sandbox was actually made:
 
 ```
 It is running in sandbox <sandbox id>.
+
+<your isolated.instructions string>
 ```
 
 There is no output path and no result path. The raw output of an agent job is pi's JSON event
@@ -304,16 +303,18 @@ Expected: 120s
 
 #### Errors
 
-Three messages, all from the sandbox provider. `run_agent` no longer takes a `resumeFrom`, so it
-has no argument errors left at all.
+Five. Three come from the sandbox provider; two are the refusals that replaced withholding the
+tool.
 
 | # | Message | Raised when |
 |---|---|---|
-| 1 | `isolated.create failed: <stderr, trimmed>` | the configured `isolated.create` command exits non-zero |
-| 2 | `isolated.create must print {id, ssh, cwd}: <stdout, trimmed>` | its output parses as JSON but is missing `id`, `ssh` or `cwd` |
-| 3 | `isolated.create ssh must start with ssh: <the ssh value>` | its `ssh` field's first word is not `ssh` |
+| 1 | `This session has no subagent depth left, so it cannot start one. Do the work here.` | the session is a subagent at the configured depth |
+| 2 | `No sandbox provider is configured, so isolation "isolated" cannot be used. Set "isolated" in pi-background.json, or leave isolation out and the subagent runs here.` | `isolation: "isolated"` with no `isolated` in the config |
+| 3 | `isolated.create failed: <stderr, trimmed>` | the configured `isolated.create` command exits non-zero |
+| 4 | `isolated.create must print {id, ssh, cwd}: <stdout, trimmed>` | its output parses as JSON but is missing `id`, `ssh` or `cwd` |
+| 5 | `isolated.create ssh must start with ssh: <the ssh value>` | its `ssh` field's first word is not `ssh` |
 
-All three are reachable only when `isolated` is configured. If `isolated.create` prints something
+Rows 3 to 5 are reachable only when `isolated` is configured. If `isolated.create` prints something
 that is not JSON at all, both readers instead see the raw `JSON.parse` message from the runtime,
 for example `Unexpected token o in JSON at position 1`.
 
@@ -694,7 +695,7 @@ Thrown or logged outside a tool call, so pi shows them as an extension error or 
 
 | Where | Text |
 |---|---|
-| `session_start` | `<file> + <file>: unknown key "<key>". The keys are maxDepth, nudgeModel, nudgeThinking, isolated, logFile, debug.` |
+| `session_start` | `<file> + <file>: unknown key "<key>". The keys are maxDepth, nudgeModel, nudgeThinking, isolated.` |
 | `session_start` | `<file> + <file>: "<key>" is <value>, which that key does not take.` |
 | `session_start` | `<file> is not valid JSON: <parser message>` |
 | `session_start` | `pi-background.json: nudgeModel and nudgeThinking must be set together` |
@@ -719,7 +720,6 @@ Written to disk, read by nobody unless asked for:
 | `<agent dir>/jobs/<job id>/stderr` | an agent child's stderr |
 | `<agent dir>/jobs/<job id>/result` | an agent job's final assistant message, as plain text |
 | `<agent dir>/state/<pid>.json` | the activity file: pid, process start time, session id, cwd, and `active` or `idle` |
-| `<agent dir>/pi-background.log` | one JSON line per job event: `start`, `detach`, `overrun`, `end`, `stop`, and each `nudge` |
 
 The model reaches `output` and `result` only by reading the paths it was given. The activity file
 is for RMNG, not for either reader.
@@ -731,6 +731,9 @@ in the session file, and nowhere else. Your screen shows the title the model wro
 
 ## What this extension never says to the model
 
-No system-prompt contribution, no `promptSnippet`, no `promptGuidelines`, no skills, no prompt
-templates. Sections A to D are the complete surface. A session with this extension loaded and no
-jobs running carries only the five tool descriptions.
+No system-prompt contribution of its own, no `promptGuidelines`, no skills, no prompt templates.
+Sections A to D are the complete surface. A session with this extension loaded and no jobs running
+carries the five tool descriptions and `bash`'s one-line `promptSnippet`, which pi puts in the
+tool list of its own system prompt — that snippet is transcribed in section A. A session with no
+subagent depth left still carries all five: which tools exist does not depend on the config (§9.4
+of the design).

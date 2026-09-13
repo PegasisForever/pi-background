@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { contentText } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CONFIG_DIR_NAME, getAgentDir, getShellConfig, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Static } from "typebox";
@@ -9,14 +10,9 @@ import type { Sandbox } from "./agent-job.ts";
 import { parseSandbox, runAgent } from "./agent-job.ts";
 import { runCommand } from "./command-job.ts";
 import * as jobs from "./jobs.ts";
-import { log } from "./log.ts";
 import { block, header, labelled, type Shown, shown } from "./shown.ts";
 
-/**
- * Read on every call, never cached, so `PI_CODING_AGENT_DIR` is honoured wherever it is set.
- * The same rule holds for the jobs directory in `jobs.ts`.
- */
-const stateDir = (): string => join(getAgentDir(), "state");
+const STATE_DIR = join(getAgentDir(), "state");
 const CONFIG_NAME = "pi-background.json";
 /** Caps reasoning plus output, so it must survive the model's thinking. */
 const CLASSIFIER_MAX_TOKENS = 2048;
@@ -49,20 +45,10 @@ const ConfigSchema = Type.Object(
 				{ additionalProperties: false },
 			),
 		),
-		logFile: Type.Optional(Type.Union([Type.String(), Type.Null()])),
-		debug: Type.Optional(Type.Boolean()),
 	},
 	{ additionalProperties: false },
 );
-type Raw = Static<typeof ConfigSchema>;
-
-/** The settings, with every default already filled in, so nothing downstream repeats them. */
-interface Config extends Raw {
-	logFile: string;
-	debug: boolean;
-}
-
-const defaultLogFile = (): string => join(getAgentDir(), "pi-background.log");
+type Config = Static<typeof ConfigSchema>;
 
 function readConfig(cwd: string): Config {
 	const merged: Record<string, unknown> = {};
@@ -83,12 +69,7 @@ function readConfig(cwd: string): Config {
 	if ((merged.nudgeModel === undefined) !== (merged.nudgeThinking === undefined)) {
 		throw new Error(`${CONFIG_NAME}: nudgeModel and nudgeThinking must be set together`);
 	}
-	const raw = merged as Raw;
-	return {
-		...raw,
-		logFile: typeof raw.logFile === "string" ? raw.logFile : defaultLogFile(),
-		debug: raw.debug ?? false,
-	};
+	return merged;
 }
 
 /**
@@ -130,12 +111,6 @@ function procStart(): string {
 	return field;
 }
 
-const assistantText = (content: readonly { type: string }[]): string =>
-	content
-		.filter((c): c is { type: "text"; text: string } => c.type === "text")
-		.map((c) => c.text)
-		.join("");
-
 const TitleParam = Type.String({ description: "Short title for this job, shown in the job list" });
 const ExpectedParam = Type.Number({
 	minimum: 1,
@@ -147,12 +122,12 @@ const ExpectedParam = Type.Number({
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag("jobs-depth", { type: "string", description: "Internal: remaining subagent depth" });
 
-	let config: Config = { logFile: defaultLogFile(), debug: false };
+	let config: Config = {};
 	let depthRemaining = 1;
 	let isChild = false;
 	let nudgesThisTurn = 0;
 	let runtime: ModelRuntime | undefined;
-	const statePath = join(stateDir(), `${process.pid}.json`);
+	const statePath = join(STATE_DIR, `${process.pid}.json`);
 	const started = procStart();
 
 	/**
@@ -205,7 +180,7 @@ export default function (pi: ExtensionAPI) {
 		if (reply.stopReason === "error" || reply.stopReason === "aborted") {
 			throw new Error(`nudge classifier failed: ${reply.errorMessage ?? reply.stopReason}`);
 		}
-		const answer = assistantText(reply.content).trim();
+		const answer = contentText(reply.content, "").trim();
 		if (answer === "") {
 			throw new Error(
 				`nudge classifier produced no text: ${config.nudgeModel} at thinking "${config.nudgeThinking}" within ${CLASSIFIER_MAX_TOKENS} tokens`,
@@ -221,13 +196,12 @@ export default function (pi: ExtensionAPI) {
 		const msg = leaf?.type === "message" ? leaf.message : undefined;
 		if (msg?.role !== "assistant") return;
 		if (msg.stopReason === "error" || msg.stopReason === "aborted") return;
-		const text = assistantText(msg.content).trim();
+		const text = contentText(msg.content, "").trim();
 		if (!text) return;
 
 		const action = await classify(text);
 		if (action === "") return;
 		nudgesThisTurn += 1;
-		log(config, "nudge", { action, nth: nudgesThisTurn });
 		pi.sendUserMessage(`You said you would ${action}, but did not. Continue.`);
 	}
 
@@ -246,14 +220,30 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	/**
+	 * A subagent cannot start one of its own beyond the configured depth. The refusal happens here,
+	 * when the tool is called, rather than by withholding the tool: what exists must not depend on
+	 * a config file that can fail to load.
+	 */
+	function refuseWithoutDepth(): void {
+		if (depthRemaining > 0) return;
+		throw new Error("This session has no subagent depth left, so it cannot start one. Do the work here.");
+	}
+
 	/** Both readers are served from one job: text for the model, lines for the TUI. */
 	const answer = (job: jobs.Job) => ({
 		content: [{ type: "text" as const, text: jobs.started(job) }],
 		details: { lines: [`Expected: ${jobs.expectedText(job)}`] },
 	});
 
+	/**
+	 * Registered before any handler runs, and never from inside one. Pi catches a handler throw and
+	 * carries on, so a tool registered in `session_start` disappears for the whole session the first
+	 * time anything there fails — a typo in the config file would leave the model with no tools and
+	 * a system prompt that still names them. Nothing here may depend on the config: what a tool does
+	 * with a missing setting is decided when it is called, and said out loud (C7).
+	 */
 	function registerTools(): void {
-		const isolated = config.isolated;
 		pi.registerTool<typeof BashParams, Shown>({
 			name: "bash",
 			label: "bash",
@@ -297,114 +287,112 @@ export default function (pi: ExtensionAPI) {
 			renderResult: (result, _options, theme) => shown(result, theme),
 		});
 
-		if (depthRemaining > 0) {
-			const RunAgentParams = Type.Object({
-				task: Type.String({ description: "The complete instruction for the subagent" }),
-				title: TitleParam,
-				expectedSeconds: ExpectedParam,
-				cwd: Type.Optional(Type.String({ description: "Working directory" })),
-				// Offered only when a sandbox provider is configured, so there is nothing to refuse.
-				...(isolated
-					? {
-							isolation: Type.Optional(
-								Type.Union([Type.Literal("local"), Type.Literal("isolated")], {
-									description: "isolated runs in a fresh sandbox",
-								}),
-							),
-						}
-					: {}),
-			});
+		pi.registerTool<typeof RunAgentParams, Shown>({
+			name: "run_agent",
+			label: "Run agent",
+			description:
+				"Start a subagent on a task and return immediately. The result is delivered to you " +
+				"automatically when it finishes, so end your turn rather than polling or sleeping. " +
+				"The subagent starts with no context: put everything it needs in the task. It returns " +
+				'a job id, which job_list, job_stop and resume_agent take. Pass isolation "isolated" ' +
+				"to run it in a fresh sandbox; what to do with that sandbox afterwards comes back with " +
+				"the job id.",
+			parameters: RunAgentParams,
+			async execute(_id, params, signal, _onUpdate, toolCtx) {
+				refuseWithoutDepth();
+				let sandbox: Sandbox | undefined;
+				if (params.isolation === "isolated") {
+					const isolated = config.isolated;
+					if (!isolated) {
+						throw new Error(
+							`No sandbox provider is configured, so isolation "isolated" cannot be used. Set "isolated" in ${CONFIG_NAME}, or leave isolation out and the subagent runs here.`,
+						);
+					}
+					const shell = getShellConfig();
+					const run = await pi.exec(shell.shell, [...shell.args, isolated.create], { signal });
+					if (run.code !== 0) throw new Error(`isolated.create failed: ${run.stderr.trim()}`);
+					sandbox = parseSandbox(run.stdout);
+				}
+				const cwd = sandbox?.cwd ?? params.cwd ?? toolCtx.cwd;
+				const job = jobs.start(
+					{
+						kind: "agent",
+						title: params.title,
+						cwd,
+						expectedSeconds: params.expectedSeconds,
+						sandboxId: sandbox?.id,
+						ssh: sandbox?.ssh,
+					},
+					(j) =>
+						runAgent(j, {
+							task: params.task,
+							cwd,
+							depthRemaining,
+							sessionDir: j.dir,
+							sessionId: j.id,
+							ssh: sandbox?.ssh,
+						}),
+				);
+				const started = answer(job);
+				// The sandbox instructions say how to clean one up, so they belong where a sandbox was
+				// actually made — not in a description every turn pays for whether or not one is used.
+				if (sandbox && config.isolated) {
+					started.content[0] = {
+						type: "text" as const,
+						text: `${started.content[0]?.text ?? ""}\n\n${config.isolated.instructions}`,
+					};
+				}
+				return started;
+			},
+			renderCall: (params, theme) => header(theme, "run_agent", params.title),
+			renderResult: (result, _options, theme) => shown(result, theme),
+		});
 
-			pi.registerTool<typeof RunAgentParams, Shown>({
-				name: "run_agent",
-				label: "Run agent",
-				description:
-					"Start a subagent on a task and return immediately. The result is delivered to you " +
-					"automatically when it finishes, so end your turn rather than polling or sleeping. " +
-					"The subagent starts with no context: put everything it needs in the task. It returns " +
-					"a job id, which job_list, job_stop and resume_agent take." +
-					(isolated ? `\n\n${isolated.instructions}` : ""),
-				parameters: RunAgentParams,
-				async execute(_id, params, _signal, _onUpdate, toolCtx) {
-					let sandbox: Sandbox | undefined;
-					if (isolated && params.isolation === "isolated") {
-						const shell = getShellConfig();
-						const run = await pi.exec(shell.shell, [...shell.args, isolated.create]);
-						if (run.code !== 0) throw new Error(`isolated.create failed: ${run.stderr.trim()}`);
-						sandbox = parseSandbox(run.stdout);
-					}
-					const cwd = sandbox?.cwd ?? params.cwd ?? toolCtx.cwd;
-					return answer(
-						jobs.start(
-							{
-								kind: "agent",
-								title: params.title,
-								cwd,
-								expectedSeconds: params.expectedSeconds,
-								sandboxId: sandbox?.id,
-								ssh: sandbox?.ssh,
-							},
-							(j) =>
-								runAgent(j, {
-									task: params.task,
-									cwd,
-									depthRemaining,
-									sessionDir: j.dir,
-									sessionId: j.id,
-									ssh: sandbox?.ssh,
-								}),
-						),
-					);
-				},
-				renderCall: (params, theme) => header(theme, "run_agent", params.title),
-				renderResult: (result, _options, theme) => shown(result, theme),
-			});
-
-			pi.registerTool<typeof ResumeAgentParams, Shown>({
-				name: "resume_agent",
-				label: "Resume agent",
-				description:
-					"Continue a finished subagent with a follow-up task. It keeps the original job's " +
-					"context, directory and host, so it takes neither cwd nor isolation. It returns a new " +
-					"job id, which job_list, job_stop and resume_agent take.",
-				parameters: ResumeAgentParams,
-				async execute(_id, params) {
-					const previous = jobs.get(params.jobId);
-					if (!previous) throw new Error(`no such job: ${params.jobId}`);
-					if (previous.kind !== "agent") throw new Error(`job ${previous.id} is not a subagent`);
-					if (previous.status === "running") {
-						throw new Error(`job ${previous.id} is still running; stop it or wait for it`);
-					}
-					if (jobs.running().some((j) => j.sessionOf === previous.sessionOf)) {
-						throw new Error(`another job is already continuing ${previous.id}`);
-					}
-					return answer(
-						jobs.start(
-							{
-								kind: "agent",
-								title: params.title,
+		pi.registerTool<typeof ResumeAgentParams, Shown>({
+			name: "resume_agent",
+			label: "Resume agent",
+			description:
+				"Continue a finished subagent with a follow-up task. It keeps the original job's " +
+				"context, directory and host, so it takes neither cwd nor isolation. It returns a new " +
+				"job id, which job_list, job_stop and resume_agent take.",
+			parameters: ResumeAgentParams,
+			async execute(_id, params) {
+				refuseWithoutDepth();
+				const previous = jobs.get(params.jobId);
+				if (!previous) throw new Error(`no such job: ${params.jobId}`);
+				if (previous.kind !== "agent") throw new Error(`job ${previous.id} is not a subagent`);
+				if (previous.status === "running") {
+					throw new Error(`job ${previous.id} is still running; stop it or wait for it`);
+				}
+				if (jobs.running().some((j) => j.sessionOf === previous.sessionOf)) {
+					throw new Error(`another job is already continuing ${previous.id}`);
+				}
+				return answer(
+					jobs.start(
+						{
+							kind: "agent",
+							title: params.title,
+							cwd: previous.cwd,
+							expectedSeconds: params.expectedSeconds,
+							sandboxId: previous.sandboxId,
+							ssh: previous.ssh,
+							sessionOf: previous.sessionOf,
+						},
+						(j) =>
+							runAgent(j, {
+								task: params.task,
 								cwd: previous.cwd,
-								expectedSeconds: params.expectedSeconds,
-								sandboxId: previous.sandboxId,
+								depthRemaining,
+								sessionDir: previous.dir,
+								sessionId: previous.id,
 								ssh: previous.ssh,
-								sessionOf: previous.sessionOf,
-							},
-							(j) =>
-								runAgent(j, {
-									task: params.task,
-									cwd: previous.cwd,
-									depthRemaining,
-									sessionDir: previous.dir,
-									sessionId: previous.id,
-									ssh: previous.ssh,
-								}),
-						),
-					);
-				},
-				renderCall: (params, theme) => header(theme, "resume_agent", params.title),
-				renderResult: (result, _options, theme) => shown(result, theme),
-			});
-		}
+							}),
+					),
+				);
+			},
+			renderCall: (params, theme) => header(theme, "resume_agent", params.title),
+			renderResult: (result, _options, theme) => shown(result, theme),
+		});
 
 		pi.registerTool<typeof NoParams, Shown>({
 			name: "job_list",
@@ -432,7 +420,7 @@ export default function (pi: ExtensionAPI) {
 				const before = jobs.get(params.id);
 				if (!before) throw new Error(`no such job: ${params.id}`);
 				const wasRunning = before.status === "running";
-				await jobs.stop(params.id);
+				await jobs.stop(before);
 				return {
 					content: [{ type: "text", text: jobs.stopped(before, wasRunning) }],
 					details: { lines: [] },
@@ -443,8 +431,9 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
+	registerTools();
+
 	pi.on("session_start", async (_event, ctx) => {
-		config = readConfig(ctx.cwd);
 		const flag = pi.getFlag("jobs-depth");
 		isChild = typeof flag === "string";
 		if (isChild) {
@@ -454,23 +443,20 @@ export default function (pi: ExtensionAPI) {
 					`pi-background: --jobs-depth must be a whole number, got "${flag as string}"`,
 				);
 			}
-		} else {
-			depthRemaining = config.maxDepth ?? 1;
 		}
-		mkdirSync(stateDir(), { recursive: true });
-		jobs.init(
-			pi,
-			() => refreshActivity(ctx),
-			(event, data) => log(config, event, data),
-		);
-		registerTools();
+		mkdirSync(STATE_DIR, { recursive: true });
+		jobs.init(pi, () => refreshActivity(ctx));
 		refreshActivity(ctx);
+		// Last, because it is the one line here that can throw: a bad config file must not stop the
+		// activity file, the job registry or anything else this session needs.
+		config = readConfig(ctx.cwd);
+		if (!isChild) depthRemaining = config.maxDepth ?? 1;
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		ctx.ui.setStatus(jobs.NAME, undefined);
 		await jobs.shutdown();
-		rmSync(statePath);
+		rmSync(statePath, { force: true });
 	});
 
 	pi.on("agent_start", async (_event, ctx) => refreshActivity(ctx));
@@ -500,6 +486,18 @@ const BashParams = Type.Object({
 			"command is still running you are told so, and you decide whether to let it continue. " +
 			"Pass null for a service such as a dev server, which you are not waiting on.",
 	}),
+});
+
+const RunAgentParams = Type.Object({
+	task: Type.String({ description: "The complete instruction for the subagent" }),
+	title: TitleParam,
+	expectedSeconds: ExpectedParam,
+	cwd: Type.Optional(Type.String({ description: "Working directory" })),
+	isolation: Type.Optional(
+		Type.Union([Type.Literal("local"), Type.Literal("isolated")], {
+			description: "isolated runs in a fresh sandbox; needs a sandbox provider to be configured",
+		}),
+	),
 });
 
 const ResumeAgentParams = Type.Object({

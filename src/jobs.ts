@@ -23,7 +23,6 @@ export interface Job {
 	ssh?: string;
 	sessionOf: string;
 	stop: AbortController;
-	signal: AbortSignal;
 	outputFd: number;
 	settled: Promise<void>;
 	/** The model is waiting on this command's result, so it needs no message when it ends. */
@@ -54,39 +53,28 @@ export interface Outcome {
 /** The extension's own name: the tag on every injected message, and the name in every path. */
 export const NAME = "pi-background";
 
-/**
- * Read on every call, never cached, so `PI_CODING_AGENT_DIR` is honoured wherever it is set.
- * The same rule holds for the state directory in `index.ts`.
- */
-const jobsRoot = (): string => join(getAgentDir(), "jobs");
+const JOBS_ROOT = join(getAgentDir(), "jobs");
 
 const jobs = new Map<string, Job>();
 let api: ExtensionAPI;
 let onChange: () => void;
-/** Set by `init`, because the log file is a config key and the config lives in `index.ts`. */
-let record: (event: string, data: Record<string, unknown>) => void = () => undefined;
 let shuttingDown = false;
 
-export function init(
-	pi: ExtensionAPI,
-	activityRefresh: () => void,
-	logger: (event: string, data: Record<string, unknown>) => void,
-): void {
+export function init(pi: ExtensionAPI, activityRefresh: () => void): void {
 	api = pi;
 	onChange = activityRefresh;
-	record = logger;
 	// pi caches the extension module across /new, /resume and /fork, so this is not fresh.
 	shuttingDown = false;
 }
 
-export const list = (): Job[] => [...jobs.values()];
+const list = (): Job[] => [...jobs.values()];
 export const get = (id: string): Job | undefined => jobs.get(id);
 export const running = (): Job[] => list().filter((j) => j.status === "running");
 /** A service is not waited on, so it must not hold the session busy or silence a nudge. */
 export const activeCount = (): number => running().filter((j) => j.expectedSeconds !== null).length;
 
-export const outputPath = (job: Job): string => join(job.dir, "output");
-export const resultPath = (job: Job): string => join(job.dir, "result");
+const outputPath = (job: Job): string => join(job.dir, "output");
+const resultPath = (job: Job): string => join(job.dir, "result");
 
 export interface StartOptions {
 	kind: JobKind;
@@ -103,7 +91,7 @@ export interface StartOptions {
 /** Creates the job and its runner together, so a job can never exist untracked. */
 export function start(options: StartOptions, run: (job: Job) => Promise<Outcome>): Job {
 	const id = uuidv7();
-	const dir = join(jobsRoot(), id);
+	const dir = join(JOBS_ROOT, id);
 	mkdirSync(dir, { recursive: true });
 	const stop = new AbortController();
 	const { promise, resolve } = Promise.withResolvers<void>();
@@ -119,21 +107,13 @@ export function start(options: StartOptions, run: (job: Job) => Promise<Outcome>
 		sandboxId: options.sandboxId,
 		ssh: options.ssh,
 		sessionOf: options.sessionOf ?? id,
-		stop,
 		// Nothing but job_stop ends a job early, so the abort controller is the whole story.
-		signal: stop.signal,
+		stop,
 		outputFd: openSync(join(dir, "output"), "a"),
 		settled: promise,
 		foreground: options.foreground ?? false,
 	};
 	jobs.set(id, job);
-	record("start", {
-		job: id,
-		kind: job.kind,
-		title: job.title,
-		expected: job.expectedSeconds,
-		foreground: job.foreground,
-	});
 	// A foreground job's clock starts when the wait ends, because that report is the first overrun.
 	if (options.expectedSeconds !== null && !job.foreground) {
 		job.overrun = setInterval(() => reportOverrun(job), options.expectedSeconds * 1000);
@@ -179,7 +159,6 @@ export function waitInForeground(job: Job, seconds: number, signal?: AbortSignal
 /** The wait is over and the command is still running: it carries on without a waiter. */
 export function detach(job: Job, seconds: number, overran: boolean): void {
 	job.foreground = false;
-	record("detach", { job: job.id, overran, elapsed: elapsed(job) });
 	// An overrun was just reported to the model, so the five-minute floor starts from here.
 	if (overran) job.overrunAt = Date.now();
 	job.overrun = setInterval(() => reportOverrun(job), seconds * 1000);
@@ -195,7 +174,6 @@ function reportOverrun(job: Job): void {
 	if (shuttingDown || job.status !== "running") return;
 	if (job.overrunAt !== undefined && now - job.overrunAt < QUIET_MS) return;
 	job.overrunAt = now;
-	record("overrun", { job: job.id, elapsed: elapsed(job), expected: job.expectedSeconds });
 	send(overrun(job), overrunForYou(job));
 }
 
@@ -208,14 +186,6 @@ function finalise(job: Job, outcome: Outcome): void {
 	job.endedAt = Date.now();
 	closeSync(job.outputFd);
 	clearInterval(job.overrun);
-	record("end", {
-		job: job.id,
-		kind: job.kind,
-		status: job.status,
-		exitCode: job.exitCode ?? null,
-		reason: job.reason ?? null,
-		elapsed: elapsed(job),
-	});
 	if (shuttingDown) return;
 	onChange();
 	// The model already has the answer: job_stop returned it, or a foreground wait did.
@@ -225,19 +195,15 @@ function finalise(job: Job, outcome: Outcome): void {
 
 const send = (content: string, lines: string[]): void => {
 	api.sendMessage(
-		{ customType: "pi-background", content, details: { lines }, display: true },
+		{ customType: NAME, content, details: { lines }, display: true },
 		{ deliverAs: "followUp", triggerTurn: true },
 	);
 };
 
-export async function stop(id: string): Promise<Job | undefined> {
-	const job = jobs.get(id);
-	if (job?.status === "running") {
-		record("stop", { job: job.id, elapsed: elapsed(job) });
-		job.stop.abort();
-		await job.settled;
-	}
-	return job;
+export async function stop(job: Job): Promise<void> {
+	if (job.status !== "running") return;
+	job.stop.abort();
+	await job.settled;
 }
 
 export async function shutdown(): Promise<void> {
@@ -438,13 +404,7 @@ const RIGHT = [false, false, false, true, true];
 export function table(): string[] {
 	const live = running();
 	if (live.length === 0) return ["No jobs running."];
-	const cells = live.map((j) => [
-		j.id,
-		j.kind === "command" ? "command" : "agent",
-		j.title,
-		elapsed(j),
-		expectedText(j),
-	]);
+	const cells = live.map((j) => [j.id, j.kind, j.title, elapsed(j), expectedText(j)]);
 	const width = HEADINGS.map((h, i) =>
 		Math.max(h.length, ...cells.map((row) => (row[i] as string).length)),
 	);
@@ -460,9 +420,17 @@ export function table(): string[] {
 
 /** The last lines of a command's output: enough to see what happened, never the whole file. */
 export function tail(job: Job): string {
-	const path = outputPath(job);
+	const cut = truncateTail(readTail(outputPath(job), TAIL_WINDOW), {
+		maxLines: TAIL_LINES,
+		maxBytes: TAIL_BYTES,
+	});
+	return cut.content.trim();
+}
+
+/** The end of a file, without reading the whole of it: a build log is large. */
+export function readTail(path: string, maxBytes: number): string {
 	const total = size(path);
-	const from = Math.max(0, total - TAIL_WINDOW);
+	const from = Math.max(0, total - maxBytes);
 	const length = total - from;
 	if (length === 0) return "";
 	const buffer = Buffer.alloc(length);
@@ -472,8 +440,7 @@ export function tail(job: Job): string {
 	} finally {
 		closeSync(fd);
 	}
-	const cut = truncateTail(buffer.toString("utf8"), { maxLines: TAIL_LINES, maxBytes: TAIL_BYTES });
-	return cut.content.trim();
+	return buffer.toString("utf8");
 }
 
 const size = (path: string): number => {

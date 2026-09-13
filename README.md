@@ -29,10 +29,10 @@ takes, and a low guess should cost a message, not the work.
 agent and it moves to the background, as an overrun does. `job_stop` is the only thing that ends a
 job early.
 
-**The whole output is always on disk.** Every command writes to `~/.pi/agent/jobs/<id>/output`. What
-the agent is shown is the last 10 lines or 1000 bytes, whichever is shorter, and the path. When that
-is not enough it reads the file. You see the same lines in the terminal, by the same rule, on every
-result and every completion message.
+**The whole output is always on disk.** Every command writes to `~/.pi/agent/jobs/<id>/output`.
+The agent is shown only the end of it, and the path; when that is not enough it reads the file.
+You see the same lines in the terminal, by the same rule, on every result and every completion
+message.
 
 **Subagents.** `run_agent` starts a whole `pi` process on a task, locally or inside a sandbox
 reached over SSH, and reports the same way. There is one kind of subagent: no roles, no presets, no
@@ -89,15 +89,11 @@ Two optional files, shallow-merged, project over user:
   "nudgeModel": "openai-codex/gpt-5.6-luna",
   "nudgeThinking": "low",
 
-  // Sandbox provider. Absent means run_agent has no isolation parameter at all.
+  // Sandbox provider. Absent means isolation: "isolated" is refused when it is used.
   "isolated": {
     "create": "my-sandbox-create",
     "instructions": "Work happens in /home/me/work. The sandbox stays up after the job ends; run `my-sandbox-destroy <sandbox id>` when you are done with it."
-  },
-
-  // The log. null or absent means ~/.pi/agent/pi-background.log.
-  "logFile": null,
-  "debug": false
+  }
 }
 ```
 
@@ -123,8 +119,10 @@ An unknown key, a wrong type or a bad thinking level is a startup error, not a s
 | `job_list` | what is still running |
 | `job_stop` | stop one by id |
 
-`run_agent` is not registered when the session has no depth left, and `isolation` is not registered
-when no sandbox provider is configured. A parameter that would only ever be refused is not offered.
+All five exist in every session. `run_agent` refuses when the session has no subagent depth left,
+and `isolation: "isolated"` refuses when no sandbox provider is configured — each says so in one
+sentence. Which tools exist never depends on the config file, because a config file can fail to
+load and a session with no tools is worse than a tool that explains itself.
 
 ## What you get
 
@@ -201,6 +199,8 @@ Written down in full in §12 of docs/DESIGN.md. The ones worth knowing before yo
 - Every command leaves a directory under `~/.pi/agent/jobs/`, `ls` included, and nothing removes
   them.
 - A command that buffers its output hands off with nothing to show but the path.
+- **Nothing is written down when a job misbehaves.** There is no log file, so a background
+  failure you notice an hour later has left no record beyond its output file.
 
 ## Licence
 

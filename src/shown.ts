@@ -21,8 +21,7 @@ export const block = (theme: Theme, shown: Shown): Component =>
 	fill(new Box(1, 1, (t: string) => theme.bg("customMessageBg", t)), theme, "customMessageText", shown);
 
 /** Lines inside pi's tool shell, which already pads. A second Box would indent them again. */
-export const rows = (theme: Theme, shown: Shown): Component =>
-	fill(new Box(0, 0), theme, "toolOutput", shown);
+const rows = (theme: Theme, shown: Shown): Component => fill(new Box(0, 0), theme, "toolOutput", shown);
 
 /** The first row of a tool: its name in bold, then whatever names this particular call. */
 export const header = (theme: Theme, name: string, title?: string): Component =>
