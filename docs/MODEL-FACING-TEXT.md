@@ -207,7 +207,12 @@ It has not been stopped and is now in the background.
 Its job id is <job id>.
 Its whole output is collected at <agent dir>/jobs/<job id>/output.
 You will be notified when it ends.
+Do not poll it, sleep, or run a command to watch it: end your turn, and the notification will start a new one.
 ```
+
+The last line is the reason this result is longer than the facts it carries. A job id invites a
+model to wait: to sleep, to tail the output file, to call `job_list` in a loop, all of which burn a
+turn to learn nothing the notification will not tell it anyway.
 
 When the human interrupted instead, that first sentence reads:
 
@@ -228,6 +233,7 @@ It has not been stopped and is now in the background.
 Its job id is 01a09a6a-d8b4-740c-83ef-91218d51df7a.
 Its whole output is collected at /home/rmng/.pi/agent/jobs/01a09a6a-d8b4-740c-83ef-91218d51df7a/output.
 You will be notified when it ends.
+Do not poll it, sleep, or run a command to watch it: end your turn, and the notification will start a new one.
 ```
 
 #### What the model sees — the command started in the background
@@ -238,6 +244,7 @@ You will be notified when it ends.
 Command <title> is started in the background. You will be notified when it finishes, and again if it is still running after <expectedSeconds>s.
 Its job id is <job id>.
 Its output is collected at <agent dir>/jobs/<job id>/output.
+Do not poll it, sleep, or run a command to watch it: end your turn, and the notification will start a new one.
 ```
 
 The first line differs for a service, which is not waited on at all:
@@ -301,14 +308,19 @@ that exits non-zero is reported through its exit sentence, not as an error from 
 ```
 Agent <title> is started in the background. You will be notified when it finishes, and again if it is still running after <expectedSeconds>s.
 Its job id is <job id>.
+Do not poll it, sleep, or run a command to watch it: end your turn, and the notification will start a new one.
 ```
 
-An isolated subagent adds a third line, and then a blank line and **your
+The last line is the same sentence a backgrounded command gets, and it matters more here: a
+subagent takes minutes, and a parent that waits for one is two models idling instead of one.
+
+An isolated subagent adds a line before it, and then a blank line and **your
 `isolated.instructions` string verbatim** — the one piece of model-facing text that comes from
 the config file rather than the source, delivered where a sandbox was actually made:
 
 ```
 It is running in sandbox <sandbox id>.
+Do not poll it, sleep, or run a command to watch it: end your turn, and the notification will start a new one.
 
 <your isolated.instructions string>
 ```
@@ -353,6 +365,7 @@ being continued had one, since a resume stays on the same host.
 ```
 Agent greeter follow-up is started in the background. You will be notified when it finishes, and again if it is still running after 120s.
 Its job id is 01a0997c-9319-7639-87ae-48b4998f00b1.
+Do not poll it, sleep, or run a command to watch it: end your turn, and the notification will start a new one.
 ```
 
 #### What you see

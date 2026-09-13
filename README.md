@@ -25,6 +25,11 @@ not been stopped. Leave it running, or stop it with job_stop.* That repeats at e
 estimate, never more often than once every five minutes. An agent is bad at guessing how long work
 takes, and a low guess should cost a message, not the work.
 
+**A backgrounded job is never waited for.** Every result that hands back a job id ends with the same
+sentence: *Do not poll it, sleep, or run a command to watch it: end your turn, and the notification
+will start a new one.* A job id is an invitation to sit and watch, and a turn spent watching learns
+nothing the notification will not deliver.
+
 **Escape stops the waiting, not the command.** Interrupt a command that is running in front of the
 agent and it moves to the background, as an overrun does. `job_stop` is the only thing that ends a
 job early.

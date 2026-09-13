@@ -194,7 +194,7 @@ is read at a glance, not reasoned about.
 | Surface | The model | You |
 |---|---|---|
 | A command that ended in front of it | its output, the exit code, and the path only if it was cut | its last 5 lines, then `Finished in 12s.` / `Exit code: 0` |
-| A command that outlived the wait | its output, the id, the path | its last 5 lines, then `Still running after 60s, expected 60s.` / `Now in the background.` |
+| A command that outlived the wait | its output, the id, the path, and not to wait for it | its last 5 lines, then `Still running after 60s, expected 60s.` / `Now in the background.` |
 | Starting a background job | prose, the id, the output path | `bash dev server` and `Expected: none` |
 | `job_list` | grouped records with ids and paths | the `/jobs` table |
 | `job_stop` | final state, elapsed, path | the tool line alone; the footer count is the rest of the answer |

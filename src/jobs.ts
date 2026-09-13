@@ -273,8 +273,17 @@ export function started(job: Job): string {
 	];
 	if (job.kind === "command") lines.push(`Its output is collected at ${outputPath(job)}.`);
 	if (job.sandboxId) lines.push(`It is running in sandbox ${job.sandboxId}.`);
+	lines.push(NO_POLLING);
 	return lines.join("\n");
 }
+
+/**
+ * Said wherever a job has just become something the model is not waiting for. The tool description
+ * says it once a turn; this says it at the moment it applies, with the mechanism, because "wait for
+ * it" is what a model does with a job id unless it is told what will happen instead (C8).
+ */
+const NO_POLLING =
+	"Do not poll it, sleep, or run a command to watch it: end your turn, and the notification will start a new one.";
 
 /** The result of a command that ended while the model waited. It sends no message afterwards. */
 export function finished(job: Job): string {
@@ -299,6 +308,7 @@ export function handedOff(job: Job, overran: boolean): string {
 		`Its job id is ${job.id}.`,
 		`Its whole output is collected at ${outputPath(job)}.`,
 		"You will be notified when it ends.",
+		NO_POLLING,
 	);
 	return lines.join("\n");
 }
