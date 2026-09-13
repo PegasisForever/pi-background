@@ -40,7 +40,7 @@ Then, when `isolated` is configured, a blank line and **your `isolated.instructi
 | `task` | The complete instruction for the subagent |
 | `timeoutSeconds` | **Required.** Seconds to wait before giving up, as pi's bash tool counts them |
 | `cwd` | Working directory; not allowed with resumeFrom |
-| `isolation` | isolated runs in a fresh sandbox |
+| `isolation` | isolated runs in a fresh sandbox — **this row exists only when `isolated` is configured**; with no provider the parameter is not registered at all |
 | `resumeFrom` | Job id to continue |
 
 ### `job_list`
@@ -92,7 +92,6 @@ The same record per job, blank-line separated, or the single word `no jobs`.
 | `run_agent` | `no such job: <id>` |
 | `run_agent` | `job <id> is still running; stop it or wait for it` |
 | `run_agent` | `resumeFrom continues the original job's host; drop isolation` |
-| `run_agent` | `isolated jobs need an \`isolated\` config block` |
 | `run_agent` | `isolated.create must return an ssh command: <string>` |
 | `job_stop` | `no such job: <id>` |
 

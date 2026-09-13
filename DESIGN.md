@@ -88,7 +88,7 @@ started it, not inferred later.
 | Tool | Parameters | Returns |
 |---|---|---|
 | `run_command` | `command`, `timeoutSeconds` (number or null), `cwd?` | id, output path, one line on delivery |
-| `run_agent` | `task`, `timeoutSeconds` (number), `cwd?`, `isolation?`, `resumeFrom?` | id, output path, sandbox id when isolated |
+| `run_agent` | `task`, `timeoutSeconds` (number), `cwd?`, `resumeFrom?`, `isolation?` when configured | id, output path, sandbox id when isolated |
 | `job_list` | — | one row per job this session: id, what ran, status and reason, elapsed, output path, sandbox id when isolated |
 | `job_stop` | `id` | final status |
 
@@ -200,7 +200,11 @@ The extension runs `isolated.create` from the config (§9) and reads its stdout 
 {"id":"pega-sub-31","ssh":"ssh -o StrictHostKeyChecking=accept-new rmng@10.99.0.31","cwd":"/home/rmng/work"}
 ```
 
-The command runs through `pi.exec`, so it gets pi's environment and the tool's abort signal. Its
+`isolation` is registered on `run_agent` **only when `isolated` is configured**, the same rule
+§3.6 applies to depth: put it in the schema rather than accept a call and refuse it. With no
+provider there is no parameter, so there is nothing to explain and nothing to reject.
+
+The create command runs through `pi.exec`, so it gets pi's environment and the tool's abort signal. Its
 reply is shape-checked before use: by the time it is parsed the sandbox already exists, so a
 malformed line would otherwise lose the id that is its only destroy handle.
 

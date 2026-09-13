@@ -166,6 +166,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function registerTools(): void {
+		const isolated = config.isolated;
 		pi.registerTool({
 			name: "run_command",
 			label: "Run command",
@@ -202,7 +203,7 @@ export default function (pi: ExtensionAPI) {
 					"automatically when it finishes, so end your turn rather than polling or sleeping. " +
 					"The subagent starts with no context: put everything it needs in the task. It returns a " +
 					"job id, which job_list and job_stop take." +
-					(config.isolated ? `\n\n${config.isolated.instructions}` : ""),
+					(isolated ? `\n\n${isolated.instructions}` : ""),
 				parameters: Type.Object({
 					task: Type.String({ description: "The complete instruction for the subagent" }),
 					timeoutSeconds: Type.Number({
@@ -210,12 +211,17 @@ export default function (pi: ExtensionAPI) {
 						description: "Seconds to wait before giving up, as pi's bash tool counts them",
 					}),
 					cwd: Type.Optional(Type.String({ description: "Working directory; not allowed with resumeFrom" })),
-					isolation: Type.Optional(
-						Type.Union([Type.Literal("local"), Type.Literal("isolated")], {
-							description: "isolated runs in a fresh sandbox",
-						}),
-					),
 					resumeFrom: Type.Optional(Type.String({ description: "Job id to continue" })),
+					// Offered only when a sandbox provider is configured, so there is nothing to refuse.
+					...(isolated
+						? {
+								isolation: Type.Optional(
+									Type.Union([Type.Literal("local"), Type.Literal("isolated")], {
+										description: "isolated runs in a fresh sandbox",
+									}),
+								),
+							}
+						: {}),
 				}),
 				async execute(_id, params, _signal, _onUpdate, toolCtx) {
 					const previous = params.resumeFrom ? jobs.get(params.resumeFrom) : undefined;
@@ -235,10 +241,9 @@ export default function (pi: ExtensionAPI) {
 						}
 					}
 					let sandbox;
-					if (params.isolation === "isolated") {
-						if (!config.isolated) throw new Error("isolated jobs need an `isolated` config block");
+					if (isolated && params.isolation === "isolated") {
 						const shell = getShellConfig();
-						const run = await pi.exec(shell.shell, [...shell.args, config.isolated.create]);
+						const run = await pi.exec(shell.shell, [...shell.args, isolated.create]);
 						if (run.code !== 0) throw new Error(`isolated.create failed: ${run.stderr.trim()}`);
 						sandbox = parseSandbox(run.stdout);
 					}
