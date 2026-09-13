@@ -1,5 +1,14 @@
 # pi-background — feature list to pick from
 
+> **Frozen record, not current documentation.** This is the menu that was put in front of you
+> before anything was built, with your marks on it, kept because the reasons for the picks are
+> here and nowhere else. Its API details are the ones that were *proposed*, and several were
+> changed afterwards — `timeoutMinutes` became `timeoutSeconds`, `resumeFrom` became the
+> `resume_agent` tool, and jobs gained a required `title`.
+>
+> For what the extension does now, read `DESIGN.md`. For every string it emits, read
+> `MODEL-FACING-TEXT.md`. Neither of those is a record of how the design was reached; this is.
+
 One pi extension for: subagents, background commands, completion nudge, activity signal.
 Internal use only. Linux only. Inside RMNG clones.
 

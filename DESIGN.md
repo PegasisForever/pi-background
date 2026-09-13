@@ -9,7 +9,7 @@ for an external supervisor. Linux, single user.
 
 **This section outranks everything below it.** The rest of this document is a snapshot of
 reasoning, not a contract. If a decision below contradicts a principle here, the decision
-is wrong: change it, and record the change in §0. Never implement something you believe is
+is wrong: change the decision and this document with it. Never implement something you believe is
 wrong merely because it is written down. A design document that is followed against its
 own principles is how the thing we are replacing got to 9,950 lines.
 
@@ -62,24 +62,29 @@ A **job** is work the parent started that finishes later.
 
 ```
 job
-├── id       uuidv7
-├── timeout  seconds, or null for a service (an agent may not be null)
-├── status   running | done | failed
-├── reason   set when failed: an exit code, "timeout", or "stopped"
-└── dir      ~/.pi/jobs/<id>/
+├── id        uuidv7
+├── title     the model's own name for it, required
+├── timeout   seconds, or null for a service (an agent may not be null)
+├── status    running | done | failed | timeout | stopped
+├── exitCode  a command's exit status, or null when it was killed
+├── reason    set when it says more than the status and the code do
+└── dir       ~/.pi/agent/jobs/<id>/
 ```
 
 `timeoutSeconds` is **required on every call** and counted the way pi's own `bash` tool counts it.
-A number means **awaited work**: it notifies when it ends, and the session counts as active while
-it runs. `null` means a **service** — a dev server, a watcher, a tail — which never notifies and
-never makes the session active. There is no default, so the caller states which it is rather than
-getting one by omission.
+A number means **awaited work**. `null` means a **service** — a dev server, a watcher, a tail —
+which has no deadline. There is no default, so the caller states which it is rather than getting
+one by omission.
 
-An agent always finishes, so `run_agent` does not accept `null`.
+An agent always finishes, so `run_agent` and `resume_agent` do not accept `null`.
 
-One predicate, `isAwaited(job)` — `timeout` is present — drives the notification rule (§6) and
-the activity file (§8). Whether a command will finish on its own is stated by the agent that
-started it, not inferred later.
+A service is still reported when it ends (§6): a crashed dev server that says nothing is a hole,
+not a feature. What `null` decides is §8: a service does not make the session active and does not
+silence a nudge, because a process that is supposed to run for hours must not do either.
+
+`title` is required rather than derived. It is the only thing the human ever sees of a job (§2.1),
+so there has to be one, and a model that knows why it started a job writes a better line than the
+first 120 characters of a shell command. The command itself stays in the tool call arguments.
 
 ---
 
@@ -87,32 +92,53 @@ started it, not inferred later.
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| `run_command` | `command`, `timeoutSeconds` (number or null), `cwd?` | id, output path, one line on delivery |
-| `run_agent` | `task`, `timeoutSeconds` (number), `cwd?`, `resumeFrom?`, `isolation?` when configured | id, output path, sandbox id when isolated |
-| `job_list` | — | one row per job this session: id, what ran, status and reason, elapsed, output path, sandbox id when isolated |
-| `job_stop` | `id` | final status |
+| `run_command` | `command`, `title`, `timeoutSeconds` (number or null), `cwd?` | id and output path |
+| `run_agent` | `task`, `title`, `timeoutSeconds` (number), `cwd?`, `isolation?` when configured | id, and sandbox id when isolated |
+| `resume_agent` | `jobId`, `task`, `title`, `timeoutSeconds` (number) | id, and sandbox id when the original had one |
+| `job_list` | — | the running jobs, grouped by kind: id, title, elapsed, timeout, output path for a command, sandbox id when isolated |
+| `job_stop` | `id` | the job's final state |
 
-Four tools, four tight schemas. The two start tools call the same internal `start()`; what is
+Five tools, five tight schemas. The three start tools call the same internal `start()`; what is
 shared is the runtime, not the surface.
 
-`resumeFrom` is refused alongside `isolation` or `cwd` — a continuation inherits the original job's
-host and directory — and refused on a job that is still running, or whose session another running
-job is already continuing. Two children appending to one session file is history corruption, and
-the alternative to each throw is a silently inert parameter.
+**Resuming is a tool, not a parameter.** As `run_agent({ resumeFrom })` it had to refuse a `cwd`
+and an `isolation` that contradict the job being continued, because a continuation inherits the
+original's directory and host. A separate tool with neither parameter deletes both errors instead
+of reporting them — the schema says what is possible, so nothing has to be rejected. What remains
+on `resume_agent` are the four that a schema cannot express: an unknown id, a command rather than
+a subagent, a job still running, and a session another running job is already continuing. Two
+children appending to one session file is history corruption.
 
-`job_list` reads the in-memory registry. Jobs die with pi (§5.1), so it lists this session's jobs
-and nothing else; a directory left by an earlier session holds output, not live state.
+`job_list` reads the in-memory registry and **lists only what is running**. A finished job already
+reported itself (§6), so listing it again repeats what is in context; and jobs die with pi (§5.1),
+so a directory left by an earlier session holds output, not live state.
 
-**It takes no label parameter.** A row is identified by what was actually run — the command, or
-the first line of the task, truncated. A name the model has to invent can drift from what ran;
-this cannot.
+An agent row carries no output path. An agent's `output` is pi's raw JSON event stream, which is of
+no use to the model; the path to its answer arrives with the completion message, once the answer
+exists.
 
 The sandbox id in a row matters because there is no `job_release`: it is what the destroy command
 takes, and this is where the model finds it again after a compaction.
 
-### §2.1 Two surfaces for you, not the model
+### §2.1 Two readers, never one text
 
-A widget under the editor counts what is live, and hides when nothing is:
+Everything this extension emits is written twice: once for the model, once for you. They are
+different texts, not one text shown twice, because the two readers need different things. The
+model needs ids and paths to act on. You need to know what is running and what changed.
+
+pi gives this for free. A tool result carries `content` for the model and `details` for the UI,
+and only `content` reaches the provider; `renderCall` and `renderResult` draw from `details`, and
+`registerMessageRenderer` does the same for a custom message. So the second text costs no tokens.
+
+| Surface | The model | You |
+|---|---|---|
+| Starting a job | prose, the id, the output path | `run_command deploy staging` and `Timeout: 60s` |
+| `job_list` | grouped records with ids and paths | the `/jobs` lines |
+| `job_stop` | final state, elapsed, path | the tool line alone; the counter is the rest of the answer |
+| A completion | the tagged record and the path | one sentence, and the exit code for a command |
+
+Two surfaces have no model side at all. A widget under the editor counts what is live, and hides
+when nothing is:
 
 ```
 2 commands, 1 subagent
@@ -121,19 +147,20 @@ A widget under the editor counts what is live, and hides when nothing is:
 `/jobs` lists them one line each, as a durable entry:
 
 ```
-cmd    3m58s  sleep 400
-agent  1h10m  Review the auth diff and report file:line findings.  · sb-4998-30927
+cmd    3m58s  deploy staging
+agent  1h10m  auth diff review  · sb-4998-30927
 ```
 
 No id and no status: a listed job is running by definition, and you are not the one calling
-`job_stop` — the model is, and it has the id from the tool result. Both surfaces read the same
-`running()` view the tools do, but they format for different readers: `describe()` gives the model
-ids and paths, `summarise()` gives you density.
+`job_stop` — the model is, and it has the id from the tool result. `appendEntry` writes a `custom`
+session entry, which pi keeps out of LLM context by design.
 
-Neither reaches the model. A widget is UI, and `appendEntry` writes a `custom` session entry,
-which pi keeps out of LLM context by design — unlike `sendMessage`, which is how a job completion
-does reach the model. So watching the fleet costs no tokens, which is why `job_list` can stay
-terse for the model while `/jobs` prints everything for you.
+The whole of your side is titles and elapsed time. The command, the task, the ids and the paths
+never reach your screen. That is the trade `title` buys (§1): a good title is a better line than
+a truncated command, and a bad one is all you get.
+
+The model-facing half of every string in this table is transcribed verbatim in
+`MODEL-FACING-TEXT.md`, alongside yours, so the boundary can be audited without reading the code.
 
 There is still no `job_logs`. Output is one file and pi has `read`. Live status across several
 jobs is not one file, which is the difference.
@@ -188,11 +215,11 @@ This is the resume point, not a forensic extra. A second `pi --mode json` proces
 the same two flags and a new task on stdin continues the same conversation — verified: the second
 run recalled a codeword the first was told, and the session file grew from 1,434 to 4,124 bytes.
 
-`run_agent({ resumeFrom: <jobId> })` reuses that job's session directory, session id, working
-directory and — for an isolated job — its ssh command, so the continuation lands on the same host
-in the same place. Its own `output`, `stderr` and `result` go to the new job's directory. An
-isolated job can be resumed while its sandbox exists, which it does until the destroy command is
-run (§3.5).
+`resume_agent({ jobId })` reuses that job's session directory, session id, working directory and
+— for an isolated job — its ssh command, so the continuation lands on the same host in the same
+place. It is a new job with a new id: its own `output`, `stderr` and `result` go to the new job's
+directory, and its completion names it. An isolated job can be resumed while its sandbox exists,
+which it does until the destroy command is run (§3.5).
 
 The child is not given `--no-extensions`. It loads what any pi loads, including this extension.
 
@@ -252,7 +279,7 @@ by one number that travels down the tree and can only decrease.
 - A session started **without** the flag is a root. Its remaining depth is `maxDepth` from
   config, which is **1** when the key is absent.
 - Starting an agent job passes `--jobs-depth=<remaining - 1>` to the child.
-- A session whose remaining depth is `0` does not register `run_agent`.
+- A session whose remaining depth is `0` registers neither `run_agent` nor `resume_agent`.
 
 Registered with `pi.registerFlag("jobs-depth", { type: "string" })`, always written in the
 `--name=value` form. Flag values are `undefined` during the extension factory and readable at
@@ -330,10 +357,16 @@ const signal = timeoutSeconds === null
   : AbortSignal.any([stop.signal, AbortSignal.timeout(timeoutSeconds * 1000)]);
 ```
 
-`job_stop` aborts `stop` and waits for the job to settle, so it reports the final status rather
+`job_stop` aborts `stop` and waits for the job to settle, so it reports the final state rather
 than `running`. A timeout aborts through `AbortSignal.timeout`, which is Node's — this extension
-runs no timers. Which one fired is read from `stop.signal.aborted`, so `reason` is
-`"stopped"` or `"timeout"` with no extra state.
+runs no timers. Which one fired is read from `stop.signal.aborted`, so the status is `stopped` or
+`timeout` with no extra state.
+
+**The abort outranks whatever the runner reported.** A killed process says whatever its runtime
+says — `aborted` from pi's shell backend, `The operation was aborted` from Node's `spawn`. Both
+mean the same thing and neither is the answer, so `finalise` takes the status from the signals and
+discards the runner's version. Without that, the same stop reads differently depending on which
+kind of job it was, and both readings are noise.
 
 A command job passes the signal to `exec`, which kills the process tree. An agent job passes it to
 `spawn`, which kills the child; for an isolated job that closes the `ssh` connection and the
@@ -344,8 +377,8 @@ there is no idle watchdog.
 
 ### §5.3 One finalise
 
-One function sets the job's `status` and `reason`, sends the notification, and refreshes the
-activity file. There is no second place that decides whether a job succeeded.
+One function sets the job's `status`, `exitCode` and `reason`, sends the notification, and
+refreshes the activity file. There is no second place that decides whether a job succeeded.
 
 ---
 
@@ -353,16 +386,22 @@ activity file. There is no second place that decides whether a job succeeded.
 
 ```js
 pi.sendMessage(
-  { customType: "pi-background", content, display: true },
+  { customType: "pi-background", content, details: { lines }, display: true },
   { deliverAs: "followUp", triggerTurn: true },
 )
 ```
 
-**An awaited job notifies when it ends. A service never notifies.** That is the whole rule, and it
-is `isAwaited(job)` from §1. No exit code is inspected.
+**A job notifies when it ends, unless `job_stop` is what ended it.** That is the whole rule. No
+exit code is inspected, and the timeout plays no part.
 
-The message carries the status, the elapsed time, what was run — the command, or the first line of
-the task — and the path to read.
+A service is included. It has no deadline, but it can still crash, and a dev server that dies in
+silence is discovered by something else failing an hour later. The exception is the other
+direction: a job the model stopped itself has already been answered by `job_stop`, so delivering
+it again would wake the agent for a turn to be told what it just did.
+
+The message carries the outcome word, the elapsed time, the title, the id, a command's exit code,
+and the path to read. `details` carries your half — one sentence, no id, no path — rendered by
+`registerMessageRenderer` (§2.1).
 
 **There is no delivery-failure handling, because there is no delivery failure to catch.**
 `pi.sendMessage` returns `void` and its implementation is
@@ -445,6 +484,10 @@ API-specific; the provider-neutral `reasoning` exists only on `completeSimple`.
 The only message is the last assistant text. The reply is either `NO` or the unfinished action in
 a few words, and the nudge quotes that action back rather than saying "continue".
 
+The prompt names whose action counts: only one the assistant said **it** would take. A turn that
+ends by telling the user what to do next is not an unkept promise, and nudging on it restarts a
+session that was correctly waiting for a person.
+
 **`nudgeThinking` is not a quality dial.** Measured on `google/gemini-3.8-flash`: omitting
 `reasoning` returns an empty assistant message in 288 ms, three times out of three; `high` returns
 a correct answer. Which levels a model honours varies, so the level must be stated.
@@ -526,8 +569,8 @@ built, and needing no forwarding rules to survive an `ssh` hop.
 
   // Classifier for the nudge. "<provider>/<modelId>", split on the first "/".
   // Absent means the nudge is off. Required together with nudgeThinking.
-  "nudgeModel": "google/gemini-3.8-flash",
-  "nudgeThinking": "high",
+  "nudgeModel": "openai-codex/gpt-5.6-luna",
+  "nudgeThinking": "low",
 
   // Provider for isolated subagents. Absent means isolation:"isolated" is not offered.
   "isolated": {
@@ -573,9 +616,10 @@ The project file is read without a trust check (§12).
 | `command-job.ts` | pi's shell backend, environment, output |
 | `agent-job.ts` | argv for local and ssh, sandbox create, stdin, stdout pipe, result extraction |
 
-Four files. Tool descriptions sit next to the registration they describe, and the notification is
-sent inside `finalise`, so §5.3's "one place" is structural rather than a convention someone can
-edit away.
+Four files. Tool descriptions and both renderers sit next to the registration they describe, and
+the notification is sent inside `finalise`, so §5.3's "one place" is structural rather than a
+convention someone can edit away. Every string either reader sees is built in `jobs.ts`, one
+function per message, which is what makes `MODEL-FACING-TEXT.md` checkable against the source.
 
 ---
 
@@ -598,6 +642,8 @@ Only the ones whose reason is not obvious from the design.
 | `PI_*` variables in a command job | passing any environment loses pi's `PATH`. §4 |
 | A session latch that disables the nudge | pi reports extension errors; a throw is louder and holds no state. §7.4 |
 | A child process per nudge classification | 510 ms of startup per turn end |
+| A pid in a command's result or in `job_list` | pi's shell backend returns an exit code and nothing else. Reporting a pid means spawning the shell ourselves, or rewriting the model's command to record its own — one loses §4, the other lies about what ran. `job_stop` already stops a job by id |
+| A `resumeFrom` parameter on `run_agent` | a second tool with no `cwd` and no `isolation` deletes the two errors it needed. §2 |
 | The session's own model as the classifier | it is pinned at max thinking; a cheap model answers in 1.8 s |
 
 ---
@@ -608,8 +654,10 @@ Written down so that when one bites, the real shape is handled rather than the i
 
 1. **A sandbox is never reclaimed by this extension.** If the model forgets the destroy command,
    sandboxes accumulate.
-2. **A service that crashes is silent.** Nothing notifies; it is discovered on the next read of
-   `output` or when something that needed it fails.
+2. **A finished job exists only in the transcript.** `job_list` shows what is running, so the
+   record of a job that ended is its completion message and nothing else. If that message is
+   compacted away, the id and the output path are gone with it, and the files on disk are all
+   that is left.
 3. **An agent job whose child hangs without output runs to its timeout.** No idle detection.
 4. **A subagent cannot ask anything.** An extension inside it that would open a dialog gets an
    immediate empty answer and proceeds without that input.
@@ -628,21 +676,15 @@ Written down so that when one bites, the real shape is handled rather than the i
     settle. If a child ignores `SIGTERM`, or an `ssh` hangs on a dead network, that wait has no
     bound. A timeout here would be a constant with nothing behind it, so it stays unhandled until
     the log shows the real shape.
-10. **An isolated sandbox must have this extension available to the child.** The child is started
+11. **An isolated sandbox must have this extension available to the child.** The child is started
     with `--jobs-depth`, a flag this extension registers, so a sandbox without it fails at once
     with `Error: Unknown option: --jobs-depth`. That is loud, and it is the sandbox image's job to
     satisfy — installed for the user, or present as `.pi/extensions/` in the sandbox cwd.
+12. **A bad title is the whole of your view.** Nothing checks that a title describes the job, and
+    the command it names is never shown to you. A model that titles three jobs "run tests" gives
+    you a `/jobs` listing you cannot act on.
+13. **A stopped job is reported once, to the model.** `job_stop` suppresses the completion
+    message, so the only record you see is the tool line and the counter dropping. If the stop
+    came from something other than the model, there would be no message at all — today nothing
+    else can stop a job.
 
----
-
-## §13. Build order
-
-Each step is usable on its own and is tested before the next begins.
-
-1. `index.ts` config and registration, `jobs.ts`, `command-job.ts`; `run_command`, `job_list` and
-   `job_stop`; the `output` file.
-2. The notification and the delivery sentence. Command jobs now wake the agent.
-3. `agent-job.ts`, local only: spawn, stdin, pipe, result extraction, `run_agent`, `resumeFrom`.
-4. Isolated jobs: `isolated.create`, the instructions string, depth. Tested against `ssh localhost`.
-5. The activity file.
-6. The nudge.
