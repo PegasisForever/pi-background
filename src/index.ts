@@ -16,7 +16,7 @@ import { runCommand } from "./command-job.ts";
 import * as jobs from "./jobs.ts";
 
 const STATE_DIR = join(getAgentDir(), "state");
-const CONFIG_NAME = "pi-jobs.json";
+const CONFIG_NAME = "pi-background.json";
 /** Caps reasoning plus output, so it must survive the model's thinking. */
 const CLASSIFIER_MAX_TOKENS = 2048;
 const MAX_NUDGES_PER_TURN = 5;
@@ -81,7 +81,7 @@ function readConfig(cwd: string): Config {
 function procStart(): string {
 	const stat = readFileSync("/proc/self/stat", "utf8");
 	const field = stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/)[19];
-	if (!field) throw new Error("pi-jobs: could not read starttime from /proc/self/stat");
+	if (!field) throw new Error("pi-background: could not read starttime from /proc/self/stat");
 	return field;
 }
 
@@ -116,7 +116,7 @@ export default function (pi: ExtensionAPI) {
 			commands > 0 ? `${commands} command${commands > 1 ? "s" : ""}` : undefined,
 			agents > 0 ? `${agents} subagent${agents > 1 ? "s" : ""}` : undefined,
 		].filter((p) => p !== undefined);
-		ctx.ui.setWidget("pi-jobs", parts.length ? [parts.join(", ")] : undefined, {
+		ctx.ui.setWidget("pi-background", parts.length ? [parts.join(", ")] : undefined, {
 			placement: "belowEditor",
 		});
 	}
@@ -181,7 +181,7 @@ export default function (pi: ExtensionAPI) {
 		pi.sendUserMessage(`You said you would ${action}, but did not. Continue.`);
 	}
 
-	pi.registerEntryRenderer<{ lines: string[] }>("pi-jobs-listing", (entry, _options, theme) => {
+	pi.registerEntryRenderer<{ lines: string[] }>("pi-background-listing", (entry, _options, theme) => {
 		const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
 		for (const line of entry.data?.lines ?? []) box.addChild(new Text(line, 0, 0));
 		return box;
@@ -191,7 +191,7 @@ export default function (pi: ExtensionAPI) {
 		description: "List running jobs (shown to you only, never sent to the model)",
 		handler: async () => {
 			const live = jobs.running();
-			pi.appendEntry("pi-jobs-listing", {
+			pi.appendEntry("pi-background-listing", {
 				lines: live.length === 0 ? ["No jobs running."] : live.map((j) => jobs.summarise(j)),
 			});
 		},
@@ -340,7 +340,7 @@ export default function (pi: ExtensionAPI) {
 		if (isChild) {
 			depthRemaining = Number(flag);
 			if (!Number.isInteger(depthRemaining) || depthRemaining < 0) {
-				throw new Error(`pi-jobs: --jobs-depth must be a whole number, got "${flag as string}"`);
+				throw new Error(`pi-background: --jobs-depth must be a whole number, got "${flag as string}"`);
 			}
 		} else {
 			depthRemaining = config.maxDepth ?? 1;
@@ -352,7 +352,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
-		ctx.ui.setWidget("pi-jobs", undefined);
+		ctx.ui.setWidget("pi-background", undefined);
 		await jobs.shutdown();
 		rmSync(statePath);
 	});

@@ -126,7 +126,11 @@ function finalise(job: Job, outcome: Outcome): void {
 	onChange();
 	if (isAwaited(job)) {
 		api.sendMessage(
-			{ customType: "pi-jobs", content: `<pi-jobs>\n${describe(job)}\n</pi-jobs>`, display: true },
+			{
+				customType: "pi-background",
+				content: `<pi-background>\n${describe(job)}\n</pi-background>`,
+				display: true,
+			},
 			{ deliverAs: "followUp", triggerTurn: true },
 		);
 	}

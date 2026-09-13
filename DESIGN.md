@@ -1,4 +1,4 @@
-# pi-jobs — design
+# pi-background — design
 
 One pi extension: subagents, background commands, a completion nudge, and an activity signal
 for an external supervisor. Linux, single user.
@@ -353,7 +353,7 @@ activity file. There is no second place that decides whether a job succeeded.
 
 ```js
 pi.sendMessage(
-  { customType: "pi-jobs", content, display: true },
+  { customType: "pi-background", content, display: true },
   { deliverAs: "followUp", triggerTurn: true },
 )
 ```
@@ -509,8 +509,8 @@ This is the extension side. The reader is a separate change.
 
 | File | Scope |
 |---|---|
-| `~/.pi/agent/pi-jobs.json` | the user, everywhere |
-| `<cwd>/.pi/pi-jobs.json` | this project only |
+| `~/.pi/agent/pi-background.json` | the user, everywhere |
+| `<cwd>/.pi/pi-background.json` | this project only |
 
 Nothing is configured through the environment. The one value that travels from a parent to a
 child — remaining depth — is a CLI flag (§3.6): visible in `ps`, part of the command already being

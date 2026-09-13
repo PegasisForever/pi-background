@@ -1,4 +1,4 @@
-# pi-jobs — feature list to pick from
+# pi-background — feature list to pick from
 
 One pi extension for: subagents, background commands, completion nudge, activity signal.
 Internal use only. Linux only. Inside RMNG clones.
@@ -143,7 +143,7 @@ stdout. The extension then uses that SSH command as the transport, and calls a m
 teardown command when the job ends.
 
 ```jsonc
-// ~/.pi/agent/pi-jobs.json
+// ~/.pi/agent/pi-background.json
 {
   "isolated": {
     "create":  "rmng-sandbox-create",   // prints: ssh -o ... rmng@10.99.0.31
