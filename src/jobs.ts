@@ -195,6 +195,20 @@ export function detach(job: Job, seconds: number, overran: boolean): void {
 	job.overrun = setInterval(() => reportOverrun(job), seconds * 1000);
 }
 
+/**
+ * The estimate was wrong in kind, not in size: this is a service, and a service has no duration to
+ * be late against. The command is untouched — only the clock that was nagging about it stops, and
+ * with `expectedSeconds` null the job also stops holding the session busy and stops silencing the
+ * completion nudge, exactly as a service started as one does.
+ */
+export function makeService(job: Job): void {
+	job.expectedSeconds = null;
+	clearInterval(job.overrun);
+	job.overrun = undefined;
+	job.overrunAt = undefined;
+	onChange();
+}
+
 /** An abort outranks whatever the runner reported, which is some flavour of "killed". */
 const abortOutcome = (job: Job): Outcome | undefined =>
 	job.stop.signal.aborted ? { status: "stopped" } : undefined;
@@ -203,6 +217,9 @@ const abortOutcome = (job: Job): Outcome | undefined =>
 function reportOverrun(job: Job): void {
 	const now = Date.now();
 	if (shuttingDown || job.status !== "running") return;
+	// `makeService` cleared the interval, but a callback already queued still runs — the same race
+	// the line above covers for a job that ended between the timer firing and this running.
+	if (job.expectedSeconds === null) return;
 	if (job.overrunAt !== undefined && now - job.overrunAt < QUIET_MS) return;
 	job.overrunAt = now;
 	send(overrun(job), overrunForYou(job));
@@ -285,6 +302,14 @@ export function started(job: Job): string {
 const NO_POLLING =
 	"Do not poll it, sleep, or run a command to watch it: end your turn, and the notification will start a new one.";
 
+/**
+ * Said wherever the model is looking at a command that has outlived the estimate it gave. A dev
+ * server given a number instead of null is the common way to arrive here, and without this the only
+ * offered ways out are to stop it or to be told again in five minutes.
+ */
+const SERVICE_OFFER =
+	"If it is a service that is not meant to finish, such as a dev server, call job_service with its id and you will not be told about its duration again.";
+
 /** The result of a command that ended while the model waited. It sends no message afterwards. */
 export function finished(job: Job): string {
 	const lines = [
@@ -309,6 +334,7 @@ export function handedOff(job: Job, overran: boolean): string {
 		`Its whole output is collected at ${outputPath(job)}.`,
 		"You will be notified when it ends.",
 		NO_POLLING,
+		SERVICE_OFFER,
 	);
 	return lines.join("\n");
 }
@@ -358,6 +384,17 @@ export function stopped(job: Job, wasRunning: boolean): string {
 	return lines.join("\n");
 }
 
+/** The result of job_service. */
+export function served(job: Job, already: boolean): string {
+	const lines = already
+		? [`Command ${job.title} is already a service.`]
+		: [
+				`Command ${job.title} is a service now. It has no expected duration, so you will not be told again that it is taking longer than you thought.`,
+			];
+	lines.push("You will be notified if it stops.", `Its job id is ${job.id}.`);
+	return lines.join("\n");
+}
+
 /** The message a finished job sends to the model. */
 export function notification(job: Job): string {
 	const status = job.status as Exclude<JobStatus, "running">;
@@ -383,6 +420,8 @@ export function overrun(job: Job): string {
 		`${noun(job)} ${job.title} is still running after ${elapsed(job)}, longer than the ${job.expectedSeconds}s you expected.`,
 		"It has not been stopped. Leave it running, or stop it with job_stop.",
 		`Its job id is ${job.id}.`,
+		// A subagent is answering a question and is never a service: §1 forbids a null estimate on one.
+		...(job.kind === "command" ? [SERVICE_OFFER] : []),
 		`</${NAME}>`,
 	].join("\n");
 }

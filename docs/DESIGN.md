@@ -124,9 +124,10 @@ first 120 characters of a shell command. The command itself stays in the tool ca
 | `run_agent` | `task`, `title`, `expectedSeconds` (number), `cwd?`, `isolation?` when configured | id, and sandbox id when isolated |
 | `resume_agent` | `jobId`, `task`, `title`, `expectedSeconds` (number) | id, and sandbox id when the original had one |
 | `job_list` | — | the running jobs, grouped by kind: id, title, elapsed, expected, output path for a command, sandbox id when isolated |
+| `job_service` | `id` | that the command now has no expected duration |
 | `job_stop` | `id` | the job's final state |
 
-Five tools, five tight schemas. The three start tools call the same internal `start()`; what is
+Six tools, six tight schemas. The three start tools call the same internal `start()`; what is
 shared is the runtime, not the surface.
 
 **`bash` replaces pi's own.** Registering a tool by that name puts it in the registry in place of
@@ -197,6 +198,7 @@ is read at a glance, not reasoned about.
 | A command that outlived the wait | its output, the id, the path, and not to wait for it | its last 5 lines, then `Still running after 60s, expected 60s.` / `Now in the background.` |
 | Starting a background job | prose, the id, the output path | `bash dev server` and `Expected: none` |
 | `job_list` | grouped records with ids and paths | the `/jobs` table |
+| `job_service` | what changed, and the id back | the tool line alone; nothing on your side changes |
 | `job_stop` | final state, elapsed, path | the tool line alone; the footer count is the rest of the answer |
 | A completion | the tagged record and the path | one sentence, and the exit code for a command |
 
@@ -547,8 +549,17 @@ sentence, no id, no path — rendered by `registerMessageRenderer` (§2.1).
 ### §6.2 A job overran
 
 **An awaited job that passes `expectedSeconds` says so, and keeps running.** The message states the
-elapsed time, what was expected, the id, and that the job has not been stopped. It names both
-options — leave it, or `job_stop` it — and recommends neither.
+elapsed time, what was expected, the id, and that the job has not been stopped. It names the
+options — leave it, `job_stop` it, or, for a command, `job_service` it — and recommends none.
+
+**`job_service` is the third option because the estimate is sometimes wrong in kind, not in size.**
+A dev server given `expectedSeconds: 600` is not a slow command; it is a service that was started
+with the wrong parameter, and it will report an overrun every five minutes for as long as it runs.
+The tool sets `expectedSeconds` to null on a running command, which is the one thing that
+distinguishes a service from an awaited job, and clears the timer. The command is untouched. It is
+named where the mistake becomes visible — in the overrun message and in the hand-off result — and
+not in the `bash` description, which would pay for it on every turn to mention a tool for a mistake
+that has not happened yet (C8). A subagent is never offered it: §1 forbids a null estimate on one.
 
 That last part is the point. The extension does not know whether a build taking four times its
 estimate is stuck or merely large. The model started the job, knows what it is, and can read the

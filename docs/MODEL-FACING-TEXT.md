@@ -101,6 +101,14 @@ Registered with `run_agent`.
 
 No parameters.
 
+#### `job_service`
+
+> Turn a running command into a service, which has no expected duration: you are told if it stops, and never that it is taking longer than you thought. Use it when you gave a dev server, a watcher or a tail an expectedSeconds by mistake. The command itself is not touched.
+
+| Parameter | Description |
+|---|---|
+| `id` | Job id of the running command that is really a service |
+
 #### `job_stop`
 
 > Stop a running job by its id — a shell command or a subagent.
@@ -208,11 +216,15 @@ Its job id is <job id>.
 Its whole output is collected at <agent dir>/jobs/<job id>/output.
 You will be notified when it ends.
 Do not poll it, sleep, or run a command to watch it: end your turn, and the notification will start a new one.
+If it is a service that is not meant to finish, such as a dev server, call job_service with its id and you will not be told about its duration again.
 ```
 
-The last line is the reason this result is longer than the facts it carries. A job id invites a
-model to wait: to sleep, to tail the output file, to call `job_list` in a loop, all of which burn a
-turn to learn nothing the notification will not tell it anyway.
+The last two lines are the whole reason this result is longer than the facts it carries. A job id
+invites two mistakes, and each line answers one. Without the first, a model waits: it sleeps, or
+tails the output file, or calls `job_list` in a loop, all of which burn a turn to learn nothing that
+the notification will not tell it. Without the second, a dev server started with a number instead of
+`null` has only two offered futures — be stopped, or report an overrun every five minutes for as
+long as it lives.
 
 When the human interrupted instead, that first sentence reads:
 
@@ -234,6 +246,7 @@ Its job id is 01a09a6a-d8b4-740c-83ef-91218d51df7a.
 Its whole output is collected at /home/rmng/.pi/agent/jobs/01a09a6a-d8b4-740c-83ef-91218d51df7a/output.
 You will be notified when it ends.
 Do not poll it, sleep, or run a command to watch it: end your turn, and the notification will start a new one.
+If it is a service that is not meant to finish, such as a dev server, call job_service with its id and you will not be told about its duration again.
 ```
 
 #### What the model sees — the command started in the background
@@ -246,6 +259,10 @@ Its job id is <job id>.
 Its output is collected at <agent dir>/jobs/<job id>/output.
 Do not poll it, sleep, or run a command to watch it: end your turn, and the notification will start a new one.
 ```
+
+No `job_service` line here: the model chose `expectedSeconds` one call ago and nothing has yet shown
+the choice to be wrong. The offer appears where the mistake becomes visible — a command that outran
+the estimate, above, and the overrun message in §D.
 
 The first line differs for a service, which is not waited on at all:
 
@@ -312,7 +329,8 @@ Do not poll it, sleep, or run a command to watch it: end your turn, and the noti
 ```
 
 The last line is the same sentence a backgrounded command gets, and it matters more here: a
-subagent takes minutes, and a parent that waits for one is two models idling instead of one.
+subagent takes minutes, and a parent that waits for one is two models idling instead of one. No
+`job_service` line — §1 forbids a null estimate on an agent, so there is nothing to convert it to.
 
 An isolated subagent adds a line before it, and then a blank line and **your
 `isolated.instructions` string verbatim** — the one piece of model-facing text that comes from
@@ -433,6 +451,49 @@ job id                                type     title                elapsed  exp
 #### Errors
 
 None.
+
+### `job_service`
+
+#### What the model sees
+
+```
+Command <title> is a service now. It has no expected duration, so you will not be told again that it is taking longer than you thought.
+You will be notified if it stops.
+Its job id is <job id>.
+```
+
+Converting a command that is already a service is not an error. The first line says so instead, and
+the other two are unchanged, because they are still true:
+
+```
+Command dev server is already a service.
+You will be notified if it stops.
+Its job id is 01a09c4e-94e1-732a-b00f-9daf243df645.
+```
+
+The job id is repeated back deliberately. This tool is reached from a message that named an id, and
+the result confirms which job moved rather than leaving the model to assume its argument landed.
+
+What changed is `expectedSeconds`, to null, and nothing else. The command is not restarted, not
+re-parented and not stopped; `job_list` shows it `with no estimate` from here on, it stops counting
+towards the session being busy, and no further overrun message can be sent about it.
+
+#### What you see
+
+```
+job_service dev server
+```
+
+One line, like `job_stop`. Nothing else changes on your side: the footer counts a service the same
+as any other background command, because from where you sit it is still one command running.
+
+#### Errors
+
+| Message | Raised when |
+|---|---|
+| `no such job: <id>` | `id` names no job this session started |
+| `job <id> is a subagent, which always has an expected duration` | the id names an agent job (§1) |
+| `job <id> is no longer running` | the command has already finished, failed or been stopped |
 
 ### `job_stop`
 
@@ -610,11 +671,20 @@ The job is **not** stopped: this is a fact handed to the model, not an action ta
 Command underestimated job is still running after 10s, longer than the 10s you expected.
 It has not been stopped. Leave it running, or stop it with job_stop.
 Its job id is 01a09a37-1a83-72e4-99d5-2b05b3d9e3bc.
+If it is a service that is not meant to finish, such as a dev server, call job_service with its id and you will not be told about its duration again.
 </pi-background>
 ```
 
-`Command` is `Agent` for a subagent. The message names both options and recommends neither: the
-extension cannot tell a stuck build from a large one, and the model started the job.
+`Command` is `Agent` for a subagent, **and a subagent's message stops at the id** — the last line is
+for commands only, because §1 forbids a null estimate on an agent and there is nothing to convert it
+to.
+
+The message names the options and recommends none: the extension cannot tell a stuck build from a
+large one, and the model started the job. The third option is here rather than in the `bash`
+description because this is the first moment anything shows the estimate to have been wrong. A dev
+server given a number instead of `null` is not a slow command, and without this line its only
+offered futures are to be stopped or to send this same message every five minutes for as long as it
+runs.
 
 It repeats at every multiple of `expectedSeconds` — `2x`, `3x`, `4x` — **except** that a repeat is
 skipped when one was sent less than five minutes ago. So `expectedSeconds: 1` on a job that runs an

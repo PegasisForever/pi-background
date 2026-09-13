@@ -25,6 +25,12 @@ not been stopped. Leave it running, or stop it with job_stop.* That repeats at e
 estimate, never more often than once every five minutes. An agent is bad at guessing how long work
 takes, and a low guess should cost a message, not the work.
 
+**And the estimate can be wrong in kind, not just in size.** A dev server started with a number
+instead of `null` is not a slow command; it is a service, and it will report an overrun for as long
+as it runs. `job_service` says so after the fact: the command keeps running untouched, its expected
+duration becomes none, and the reports stop. The overrun message names the tool, because that is the
+moment the mistake becomes visible.
+
 **A backgrounded job is never waited for.** Every result that hands back a job id ends with the same
 sentence: *Do not poll it, sleep, or run a command to watch it: end your turn, and the notification
 will start a new one.* A job id is an invitation to sit and watch, and a turn spent watching learns
@@ -127,9 +133,10 @@ naming the key. It is not a shrug, and it is not a session that quietly runs on 
 | `run_agent` | start a subagent, locally or in a sandbox |
 | `resume_agent` | continue a finished subagent with a follow-up task |
 | `job_list` | what is still running in the background |
+| `job_service` | this command was never going to finish; stop expecting it to |
 | `job_stop` | stop one by id |
 
-All five exist in every session. `run_agent` refuses when the session has no subagent depth left,
+All six exist in every session. `run_agent` refuses when the session has no subagent depth left,
 and `isolation: "isolated"` refuses when no sandbox provider is configured — each says so in one
 sentence. Which tools exist never depends on the config file, because a config file can fail to
 load and a session with no tools is worse than a tool that explains itself.

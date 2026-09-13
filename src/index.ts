@@ -458,6 +458,34 @@ export default function (pi: ExtensionAPI) {
 			renderResult: (result, _options, theme) => shown(result, theme),
 		});
 
+		pi.registerTool<typeof JobServiceParams, Shown>({
+			name: "job_service",
+			label: "Make service",
+			description:
+				"Turn a running command into a service, which has no expected duration: you are told " +
+				"if it stops, and never that it is taking longer than you thought. Use it when you " +
+				"gave a dev server, a watcher or a tail an expectedSeconds by mistake. The command " +
+				"itself is not touched.",
+			parameters: JobServiceParams,
+			async execute(_id, params) {
+				const job = jobs.get(params.id);
+				if (!job) throw new Error(`no such job: ${params.id}`);
+				if (job.kind !== "command") {
+					throw new Error(`job ${job.id} is a subagent, which always has an expected duration`);
+				}
+				if (job.status !== "running") throw new Error(`job ${job.id} is no longer running`);
+				const already = job.expectedSeconds === null;
+				if (!already) jobs.makeService(job);
+				return {
+					content: [{ type: "text", text: jobs.served(job, already) }],
+					details: { lines: [] },
+				};
+			},
+			renderCall: (params, theme) =>
+				header(theme, "job_service", jobs.get(params.id)?.title ?? params.id),
+			renderResult: (result, _options, theme) => shown(result, theme),
+		});
+
 		pi.registerTool<typeof JobStopParams, Shown>({
 			name: "job_stop",
 			label: "Stop job",
@@ -552,3 +580,6 @@ const ResumeAgentParams = Type.Object({
 
 const NoParams = Type.Object({});
 const JobStopParams = Type.Object({ id: Type.String({ description: "Job id to stop" }) });
+const JobServiceParams = Type.Object({
+	id: Type.String({ description: "Job id of the running command that is really a service" }),
+});
