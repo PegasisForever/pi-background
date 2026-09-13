@@ -107,8 +107,16 @@ interface Shown {
 	lines: string[];
 }
 
-const rows = (theme: Theme, lines: string[], background = false): Component => {
-	const box = new Box(1, 1, background ? (t: string) => theme.bg("customMessageBg", t) : undefined);
+/** A block of our own: pi does not wrap a custom renderer, so it pads and tints itself. */
+const block = (theme: Theme, lines: string[]): Component => {
+	const box = new Box(1, 1, (t: string) => theme.bg("customMessageBg", t));
+	for (const line of lines) box.addChild(new Text(theme.fg("customMessageText", line), 0, 0));
+	return box;
+};
+
+/** Lines inside pi's tool shell, which already pads. A second Box would indent them again. */
+const rows = (theme: Theme, lines: string[]): Component => {
+	const box = new Box(0, 0);
 	for (const line of lines) box.addChild(new Text(theme.fg("toolOutput", line), 0, 0));
 	return box;
 };
@@ -205,7 +213,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.registerEntryRenderer<Shown>("pi-background-listing", (entry, _options, theme) =>
-		rows(theme, entry.data?.lines ?? [], true),
+		block(theme, entry.data?.lines ?? []),
 	);
 
 	pi.registerMessageRenderer<Shown>("pi-background", (message, _options, theme) => {

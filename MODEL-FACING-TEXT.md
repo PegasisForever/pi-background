@@ -167,7 +167,7 @@ has a sandbox, because `run_command` has no `isolation` parameter.
 
 ```
 run_command long sleeper
-  Timeout: none
+Timeout: none
 ```
 
 `Timeout:` is the number of seconds, or `none` for a service. No id, no path, no command.
@@ -203,7 +203,7 @@ message, once the answer exists.
 
 ```
 run_agent greeter
-  Timeout: 120s
+Timeout: 120s
 ```
 
 #### Errors
@@ -237,7 +237,7 @@ job id: 01a0997c-9319-7639-87ae-48b4998f00b1
 
 ```
 resume_agent greeter follow-up
-  Timeout: 120s
+Timeout: 120s
 ```
 
 #### Errors
@@ -294,9 +294,9 @@ Exactly what `/jobs` prints — one line per running job:
 
 ```
 job_list
-  cmd      0s  long sleeper
-  cmd      0s  quick failure
-  agent    0s  greeter
+cmd      0s  long sleeper
+cmd      0s  quick failure
+agent    0s  greeter
 ```
 
 #### Errors
