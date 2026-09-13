@@ -2,7 +2,13 @@ import { appendFileSync, closeSync, mkdirSync, openSync, readSync, statSync } fr
 import { join } from "node:path";
 import { uuidv7 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getAgentDir, truncateTail } from "@earendil-works/pi-coding-agent";
+import {
+	DEFAULT_MAX_BYTES,
+	DEFAULT_MAX_LINES,
+	formatSize,
+	getAgentDir,
+	truncateTail,
+} from "@earendil-works/pi-coding-agent";
 
 export type JobKind = "command" | "agent";
 export type JobStatus = "running" | "done" | "failed" | "stopped";
@@ -38,11 +44,26 @@ const QUIET_MS = 5 * 60 * 1000;
 /** A command you expect to be shorter than this runs while the model waits. */
 export const FOREGROUND_MAX_SECONDS = 180;
 
-/** The end of a command's output, as the model is shown it. */
-const TAIL_LINES = 10;
-const TAIL_BYTES = 1000;
-/** Only the end of the file is read: a build log is large and ten lines are wanted. */
-const TAIL_WINDOW = 64 * 1024;
+/**
+ * How much of a command's output the model is shown is Pi's decision, not ours (C5): the same
+ * `DEFAULT_MAX_LINES` and `DEFAULT_MAX_BYTES` its own bash tool cuts at, imported rather than
+ * copied, so ours follows if Pi changes them.
+ */
+
+/** What you see in the terminal: a glance, not the output. Pi shows five lines of its own. */
+const SHOWN_LINES = 5;
+const SHOWN_BYTES = 1000;
+
+/**
+ * Only the end of the file is read: a build log is large. One byte wider than Pi's byte limit, and
+ * the `+ 1` is the whole point — it is what makes the limit, and never the read, the thing that
+ * cuts. Two consequences hang on it. A window that exceeds the limit is always reported as
+ * truncated, so `truncated` is true of the whole file and not merely of the window; and the
+ * fragment of a line the window opens on can never be reached by a cut that takes whole lines from
+ * the end, so it is always dropped rather than shown. Neither wants slack. Wider is only a longer
+ * read.
+ */
+const TAIL_WINDOW = DEFAULT_MAX_BYTES + 1;
 
 export interface Outcome {
 	status: Exclude<JobStatus, "running">;
@@ -253,7 +274,6 @@ export function finished(job: Job): string {
 		`The command exited with code ${job.exitCode ?? "none"} after ${elapsed(job)}.`,
 	];
 	if (job.reason) lines.push(`It ended because ${job.reason}.`);
-	lines.push(`The whole output is at ${outputPath(job)}.`);
 	return lines.join("\n");
 }
 
@@ -329,8 +349,7 @@ export function notification(job: Job): string {
 	if (job.reason) lines.push(`It ended because ${job.reason}.`);
 	lines.push(`Its job id is ${job.id}.`);
 	if (job.kind === "command") {
-		lines.push("", "The last of its output:", "", tail(job) || "(no output)", "");
-		lines.push(`Read the whole output at ${outputPath(job)}.`);
+		lines.push("", "Its output:", "", tail(job) || "(no output)", "");
 	} else if (size(resultPath(job)) > 0) {
 		lines.push("", `Read the agent's response at ${resultPath(job)}.`);
 	}
@@ -349,11 +368,16 @@ export function overrun(job: Job): string {
 }
 
 /**
- * The same end of the output the model is given, as display lines, with a blank line before
- * whatever follows it. A command that printed nothing shows nothing: the absence is the answer.
+ * The end of the output for you, as display lines, with a blank line before whatever follows it.
+ * Shorter than the model's half and cut on its own: the model is reading the output and you are
+ * glancing at it, and 2000 lines of a build log in your scrollback is not a glance. A command that
+ * printed nothing shows nothing: the absence is the answer.
  */
 const shownTail = (job: Job): string[] => {
-	const body = tail(job);
+	const body = truncateTail(readTail(outputPath(job), TAIL_WINDOW), {
+		maxLines: SHOWN_LINES,
+		maxBytes: SHOWN_BYTES,
+	}).content.trim();
 	return body ? [...body.split("\n"), ""] : [];
 };
 
@@ -418,13 +442,28 @@ export function table(): string[] {
 	return [line(HEADINGS), ...cells.map(line)];
 }
 
-/** The last lines of a command's output: enough to see what happened, never the whole file. */
+/**
+ * The end of a command's output for the model, cut where Pi cuts its own, and followed by a line
+ * naming what was lost and where the rest is — but only when something was lost and the job is
+ * over. A path beside output the model already holds in full is a sentence it pays for and can only
+ * waste a read on (C8); a path on a job that is still running is its caller's sentence to write,
+ * in the present tense, because more output is coming whatever this cut did.
+ *
+ * `status` is the same field `index.ts` branches on to choose between `finished` and `handedOff`,
+ * so the two cannot disagree and nothing has to be passed in to say which case this is.
+ */
 export function tail(job: Job): string {
-	const cut = truncateTail(readTail(outputPath(job), TAIL_WINDOW), {
-		maxLines: TAIL_LINES,
-		maxBytes: TAIL_BYTES,
+	const path = outputPath(job);
+	const cut = truncateTail(readTail(path, TAIL_WINDOW), {
+		maxLines: DEFAULT_MAX_LINES,
+		maxBytes: DEFAULT_MAX_BYTES,
 	});
-	return cut.content.trim();
+	const text = cut.content.trim();
+	if (!cut.truncated || job.status === "running") return text;
+	// Bytes, where Pi says lines: it counts the lines of the whole output because it held the whole
+	// output in hand. Ours is on disk and only its end was read, so the honest number is the one
+	// `statSync` has already given us (C5, C7).
+	return `${text}\n\nThis is the last ${formatSize(cut.outputBytes)} of ${formatSize(size(path))}. The whole output is at ${path}.`;
 }
 
 /** The end of a file, without reading the whole of it: a build log is large. */

@@ -295,13 +295,13 @@ export default function (pi: ExtensionAPI) {
 			label: "bash",
 			description:
 				`Run a shell command. A command you expect to take less than ${jobs.FOREGROUND_MAX_SECONDS} ` +
-				"seconds runs while you wait, and returns the end of its output with the exit code. " +
+				"seconds runs while you wait, and returns its output with the exit code. " +
 				"Anything longer, and any service, starts in the background at once and is delivered to " +
 				"you when it ends, so end your turn rather than polling or sleeping. A command that " +
 				"passes your estimate is not stopped: it moves to the background and you are told when " +
 				"it ends, with a job id that job_list and job_stop take. Nothing is ever killed by the " +
-				"clock — only job_stop ends a command early. The whole output is always written to a " +
-				"file whose path you are given; read it when the end is not enough.",
+				"clock — only job_stop ends a command early. A long output is cut to its end, and the " +
+				"result then names the file holding all of it; a result that names no file is whole.",
 			promptSnippet: "Run shell commands (ls, grep, find, etc.); a long one moves to the background",
 			parameters: BashParams,
 			async execute(_id, params, signal, _onUpdate, toolCtx) {

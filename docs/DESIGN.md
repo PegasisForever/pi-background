@@ -164,20 +164,37 @@ pi gives this for free. A tool result carries `content` for the model and `detai
 and only `content` reaches the provider; `renderCall` and `renderResult` draw from `details`, and
 `registerMessageRenderer` does the same for a custom message. So the second text costs no tokens.
 
-**A command's output is the one thing both readers get in full.** Wherever the model is shown the
-end of a command's output, you are shown the same lines by the same rule — the last 10 or the last
-1000 bytes, whichever is shorter. Everything around them still differs: the model gets the id and
-the path it needs to act, you get one sentence and the exit code. A command that printed nothing
-shows you nothing, because the absence is the answer and `(no output)` is a line you would have to
-read. An agent's output is never shown, to either of you: it is pi's JSON event stream.
+**A command's output is the one thing both readers get, and the only place the two are cut
+differently.** The model is reading the output: it gets the last `DEFAULT_MAX_LINES` lines or
+`DEFAULT_MAX_BYTES` bytes, whichever is shorter — Pi's own numbers, imported rather than chosen
+(C5), so a change on its side is a change on ours. You are glancing at the output: you get the last
+5 lines or 1000 bytes. Pi splits them the same way and for the same reason, showing its model 2000
+lines and you 5. Everything around them differs as it always did: the model gets the id and the
+path it needs to act, you get one sentence and the exit code. A command that printed nothing shows
+you nothing, because the absence is the answer and `(no output)` is a line you would have to read.
+An agent's output is never shown, to either of you: it is pi's JSON event stream.
+
+**The path is named only when it is the answer to a question the model now has.** A result holding
+the whole output ends at the exit code. A result that lost something says what it lost and where
+the rest is, in one line — `This is the last 9.8KB of 23.3KB. The whole output is at …`. A result
+for a command that is *still running* always names the path, cut or not, because there is more
+coming whatever was shown. Naming a file beside output the model already has in full is a sentence
+it pays for every call and can only waste a read on (C8).
+
+That line is part of the body, not a decision any caller makes. `tail` reads `status` off the job
+and appends it or does not, which is the same field `index.ts` branches on to choose between
+`finished` and `handedOff` — so the two cannot fall out of step, and no call site had to change to
+gain the behaviour (C4). The first version of this carried a `{ text, note }` pair out of `tail`
+and asked three callers to decide what to do with the second half. It was fourteen lines longer and
+had two places to keep in agreement instead of none.
 
 **The model's half is written in sentences, and carries no markdown.** Your half stays terse: it
 is read at a glance, not reasoned about.
 
 | Surface | The model | You |
 |---|---|---|
-| A command that ended in front of it | its last lines, the exit code, the path | the same last lines, then `Finished in 12s.` / `Exit code: 0` |
-| A command that outlived the wait | its last lines, the id, the path | the same last lines, then `Still running after 60s, expected 60s.` / `Now in the background.` |
+| A command that ended in front of it | its output, the exit code, and the path only if it was cut | its last 5 lines, then `Finished in 12s.` / `Exit code: 0` |
+| A command that outlived the wait | its output, the id, the path | its last 5 lines, then `Still running after 60s, expected 60s.` / `Now in the background.` |
 | Starting a background job | prose, the id, the output path | `bash dev server` and `Expected: none` |
 | `job_list` | grouped records with ids and paths | the `/jobs` table |
 | `job_stop` | final state, elapsed, path | the tool line alone; the footer count is the rest of the answer |
@@ -398,10 +415,21 @@ sets `status` before anything else, so reading `job.status` after the wait says 
 happened. There is no `await` between that read and `detach`, so nothing can interleave.
 
 **The output is read back from the file, never accumulated.** Collection is unchanged: every byte
-goes to `output` as it always did. What the model is shown is the last `10` lines or `1000` bytes
-of that file, whichever is shorter, read from the last 64KB of it — pi's `truncateTail` does the
-cutting (C5). A build log can be large and ten lines are wanted, so the whole file is never read
-into memory. The path is always given, and pi's `read` tool is there when ten lines are not enough.
+goes to `output` as it always did. What the model is shown is the last `DEFAULT_MAX_LINES` lines or
+`DEFAULT_MAX_BYTES` bytes of that file, whichever is shorter — pi's `truncateTail` does the cutting
+with pi's own two numbers (C5). Only the end of the file is read, `DEFAULT_MAX_BYTES + 1` of it, so
+a 4MB build log is never held in memory. That one byte of width over the limit is load-bearing, and
+nothing more than one byte is needed. It makes the limit, never the read, the thing that cuts, and
+two properties follow. The truncation flag becomes trustworthy: a window that exceeds the limit is
+always reported as cut, so `truncated` is true of the whole file and not merely of the window. And
+the fragment of a line that the window opens on — it starts at a byte offset, so it usually opens
+mid-line, sometimes mid-character — can never be reached by a cut that takes whole lines from the
+end, because reaching it would mean everything after it fitting inside the limit. It is dropped
+rather than shown.
+
+It is that flag, not a comparison of sizes, that decides whether the path is named. The number the
+line reports is the file size, which `statSync` has already given us, because counting the lines of
+the whole file would mean reading the whole file.
 
 ---
 
@@ -877,8 +905,9 @@ revisited.
 | `CLASSIFIER_MAX_TOKENS` | 2048 | **Measured.** §7.3 has the table and two falsifications: at 64 the answer truncated mid-sentence, at 512 one model returned empty after 506 reasoning tokens. |
 | `FOREGROUND_MAX_SECONDS` | 180 | **Chosen.** It is where a shell command stops feeling like one. Nothing measured it, and a day of real work is what would. |
 | `QUIET_MS` | 5 minutes | **Chosen.** The argument in §5.2a justifies a floor, not this floor. |
-| `TAIL_LINES` / `TAIL_BYTES` | 10 / 1000 | **Chosen.** Enough to see how a command ended, small enough to pay for on every notification. |
-| `TAIL_WINDOW` | 64 KiB | **Chosen.** Large enough that ten lines are always inside it, small enough not to read a build log into memory. |
+| The model's cut | `DEFAULT_MAX_LINES` / `DEFAULT_MAX_BYTES` | **Not ours.** Pi's own two numbers, imported from it (C5). It is the host, and its cut is the one the model meets in every other session. |
+| `SHOWN_LINES` / `SHOWN_BYTES` | 5 / 1000 | **Chosen.** Five is what Pi shows a person of its own output. The byte bound is what keeps one minified line off your screen. |
+| `TAIL_WINDOW` | `DEFAULT_MAX_BYTES + 1` | **Derived, exactly.** The one property needed is *wider than the byte limit*, so that the limit and not the read is what cuts. One byte satisfies it. Written against the limit rather than as a number, so it follows if Pi raises the limit. |
 | `MAX_NUDGES_PER_TURN` | 5 | **Partly measured.** One was tried and was too few. Nothing distinguishes 5 from 3 or 10. |
 | `CLASSIFIER_TIMEOUT_MS` | 60 s | **Chosen.** A classification was measured at 1.8 s; this only has to bound a stalled connection. |
 | `TAIL_BYTES` in `agent-job.ts` | 4 MiB | **Chosen.** Enough to hold any final assistant message; a larger one should be a loud failure. |

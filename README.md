@@ -30,9 +30,11 @@ agent and it moves to the background, as an overrun does. `job_stop` is the only
 job early.
 
 **The whole output is always on disk.** Every command writes to `~/.pi/agent/jobs/<id>/output`.
-The agent is shown only the end of it, and the path; when that is not enough it reads the file.
-You see the same lines in the terminal, by the same rule, on every result and every completion
-message.
+The agent is shown the output itself, cut where pi cuts its own — the last 2000 lines or 50KB,
+whichever comes first. Only when that cut lost something is the file named: *This is the last 9.8KB
+of 23.3KB. The whole output is at …*. A result that names no file is the whole output, so the agent
+never spends a read finding out it already had everything. You get the last five lines in the
+terminal, on every result and every completion message, which is the same split pi makes.
 
 **Subagents.** `run_agent` starts a whole `pi` process on a task, locally or inside a sandbox
 reached over SSH, and reports the same way. There is one kind of subagent: no roles, no presets, no
@@ -142,7 +144,8 @@ Finished in 0s.
 Exit code: 0
 ```
 
-The model gets the same last lines, then the exit code and the path, as sentences.
+The model gets the output itself, then the exit code, as sentences — and the path only when
+something was cut.
 
 A count in pi's footer while anything is running:
 

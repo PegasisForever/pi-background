@@ -43,7 +43,7 @@ Every turn, for as long as the tool is registered.
 
 This tool is named `bash`, so it replaces pi's built-in shell tool. The model has no other shell.
 
-> Run a shell command. A command you expect to take less than 180 seconds runs while you wait, and returns the end of its output with the exit code. Anything longer, and any service, starts in the background at once and is delivered to you when it ends, so end your turn rather than polling or sleeping. A command that passes your estimate is not stopped: it moves to the background and you are told when it ends, with a job id that job_list and job_stop take. Nothing is ever killed by the clock — only job_stop ends a command early. The whole output is always written to a file whose path you are given; read it when the end is not enough.
+> Run a shell command. A command you expect to take less than 180 seconds runs while you wait, and returns its output with the exit code. Anything longer, and any service, starts in the background at once and is delivered to you when it ends, so end your turn rather than polling or sleeping. A command that passes your estimate is not stopped: it moves to the background and you are told when it ends, with a job id that job_list and job_stop take. Nothing is ever killed by the clock — only job_stop ends a command early. A long output is cut to its end, and the result then names the file holding all of it; a result that names no file is whole.
 
 It also contributes one line to the system prompt's list of available tools:
 
@@ -148,34 +148,56 @@ did while the model waited.
 
 #### What the model sees — the command ended while it waited
 
-`expectedSeconds` under 180, and the command finished first. The body is the last 10 lines or 1000
-bytes of the output file, whichever is shorter, or `(no output)` when the command printed nothing.
+`expectedSeconds` under 180, and the command finished first. The body is the output file, cut to its
+last `DEFAULT_MAX_LINES` lines or `DEFAULT_MAX_BYTES` bytes — Pi's own two numbers, 2000 and 50KB,
+imported from it rather than chosen here — or `(no output)` when the command printed nothing.
 
 ```
-<the end of the output>
+<the output, or the end of it>
 
 The command exited with code <exit code> after <elapsed>.
-The whole output is at <agent dir>/jobs/<job id>/output.
 ```
 
-An `It ended because …` line is added after the exit sentence when the runner reported a
-reason. Concretely:
+An `It ended because …` line is added after the exit sentence when the runner reported a reason.
+Nothing else is added when the model is holding the whole output. Concretely:
 
 ```
 alpha
 omega
 
 The command exited with code 0 after 2s.
-The whole output is at /home/rmng/.pi/agent/jobs/01a09a6d-3b96-75bb-9ed6-8ec15ab85763/output.
 ```
 
+**The path appears only when something was cut**, as one more line of the body, after a blank line,
+where it sits next to the output it describes:
+
+```
+<the end of the output>
+
+This is the last 9.8KB of 23.3KB. The whole output is at <agent dir>/jobs/<job id>/output.
+
+The command exited with code 0 after 2s.
+```
+
+Bytes, where Pi's own bash tool counts lines. Pi held the whole output in memory and could count it;
+ours is on disk and only its end was read, so the number that is true without a second read is the
+file size (C5, C7).
+
+The line belongs to the body rather than to the sentences after it, which is why no caller decides
+whether to add it: `tail` reads `status` off the job and appends it or does not. That is the same
+field `index.ts` branches on to pick this result over the next one, so the two cannot disagree.
+
 No job id: the command is over, so `job_list` will not list it and `job_stop` has nothing to stop.
-The path is the handle that outlives the call.
+When the output was cut, the path is the handle that outlives the call; when it was not, there is
+nothing left to fetch and naming a file would only invite a wasted read (C8).
 
 #### What the model sees — the wait ended and the command did not
 
 `expectedSeconds` under 180, and either the estimate passed or the human interrupted. The body is
-the same end-of-output, and is left out entirely when there is none.
+cut the same way, and is left out entirely when there is none. No `This is the last …` line is added
+here whatever was cut, because the job's `status` is still `running`: the command is still writing,
+so the last line of the result already names the file and promises more, and a second path would say
+the same thing twice.
 
 ```
 <the end of the output>
@@ -229,8 +251,11 @@ has a sandbox, because `bash` has no `isolation` parameter.
 
 #### What you see
 
-One of three, matching the three above. The first two carry the same end of the output the model
-was given — the last 10 lines or 1000 bytes, whichever is shorter — followed by a blank line.
+One of three, matching the three above. The first two carry the end of the output, cut shorter than
+the model's — **the last 5 lines or 1000 bytes**, whichever is shorter — followed by a blank line.
+The two halves are cut apart on purpose, and Pi does the same: the model is reading the output and
+you are glancing at it, so 2000 lines of a build log belongs in its result and not in your
+scrollback. Pi shows five lines of its own for the same reason.
 
 ```
 bash list etc
@@ -484,26 +509,31 @@ it wakes the agent for a new turn. Wrapped in tags:
 Background command quick failure failed after 3s, with exit code 7.
 Its job id is 01a09979-cbb8-7639-87ae-48b1389afa99.
 
-The last of its output:
+Its output:
 
 Traceback (most recent call last):
   File "build.py", line 12
 ValueError: no such target
 
-Read the whole output at /home/rmng/.pi/agent/jobs/01a09979-cbb8-7639-87ae-48b1389afa99/output.
 </pi-background>
 ```
 
 An `It ended because …` line sits between the first sentence and the job id when the runner
-reported a reason. The body under `The last of its output:` is the last 10 lines or 1000 bytes of
-the output file, whichever is shorter, and reads `(no output)` when the command printed nothing.
+reported a reason. The body under `Its output:` is cut exactly as a foreground command's is — Pi's
+2000 lines or 50KB — and reads `(no output)` when the command printed nothing. It is the same
+`tail`, so when the cut lost something the same `This is the last 9.8KB of 23.3KB. The whole output
+is at …` line ends the body, and when it did not, nothing does.
+
+Nobody asked for this message, so it is tempting to cut it shorter than a result the model is
+waiting on. It is not cut shorter, because the model cannot ask for more of a message it did not
+request, and a build that failed overnight is exactly the output worth having in full.
 
 The message carries **no instruction**. The "end your turn rather than polling" wording exists
 only in the tool description in A.
 
 #### What you see
 
-The same end of the output, then the sentence.
+The end of the output — your five lines, not the model's — then the sentence.
 
 ```
 [pi-background]
