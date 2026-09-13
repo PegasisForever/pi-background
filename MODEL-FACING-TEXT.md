@@ -1,21 +1,42 @@
-# Every word this extension puts in front of a model
+# Every word this extension produces
 
-Extracted verbatim from `src/`. Four audiences, kept separate because they cost differently:
+This extension writes text for two readers, and they do not see the same things.
 
-- **A. Always in context** — tool descriptions and parameter descriptions. Paid on every turn.
-- **B. Tool results** — paid once per call.
-- **C. Injected messages** — enter the conversation and stay there.
-- **D. The nudge classifier's own prompt** — sent to a different model, never to the session.
+- **The model** — the agent running your session. Everything it reads costs tokens.
+- **You** — the person at the pi TUI.
 
-Errors thrown from a tool reach the model as that tool's result, so they are in **B**.
+A third reader appears once: the **nudge classifier**, a separate model that never sees your
+session and whose session never sees it.
+
+Every section below states both views. Where they are identical, that is said explicitly rather
+than left to be assumed, because for tool results it is currently true and it does not have to be
+(see "Why the two views are identical for tool results" at the end).
 
 ---
 
-## A. Always in context
+## Summary: who sees what
 
-### `run_command`
+| Text | The model | You |
+|---|---|---|
+| Tool descriptions and parameter descriptions | every turn | never |
+| Tool call header | never | the tool's name, in bold |
+| Tool results | in full | the same text, first 10 lines |
+| Job completion notifications | in full | the same text, with a `[pi-background]` label |
+| The nudge | in full | the same text, as a user message |
+| The nudge classifier's prompt | never | never |
+| The job counter under the editor | never | always, when a job is running |
+| The `/jobs` listing | never | when you run `/jobs` |
+| Configuration and startup errors | never | when they happen |
 
-Label: `Run command`
+---
+
+## A. Tool descriptions and parameters
+
+### What the model sees
+
+Every turn, for as long as the tool is registered.
+
+#### `run_command`
 
 > Start a shell command in the background and return immediately. Give timeoutSeconds a number for work you are waiting on: the result is delivered to you automatically when it ends, so end your turn rather than polling or sleeping. Give it null for a service that runs until stopped and never notifies. It returns a job id, which job_list and job_stop take.
 
@@ -25,13 +46,15 @@ Label: `Run command`
 | `cwd` | Working directory |
 | `timeoutSeconds` | **Required.** Seconds to wait, as pi's bash tool counts them. Pass null for a service such as a dev server: it runs until stopped and never notifies. |
 
-### `run_agent`
+#### `run_agent`
 
-Registered only when the session has depth left. Label: `Run agent`
+Registered only when the session has depth left.
 
 > Start a subagent on a task and return immediately. The result is delivered to you automatically when it finishes, so end your turn rather than polling or sleeping. The subagent starts with no context: put everything it needs in the task. It returns a job id, which job_list and job_stop take.
 
-Then, when `isolated` is configured, a blank line and **your `isolated.instructions` string verbatim**. This is the one piece of model-facing text that comes from config rather than source. The value in the test config reads:
+Then, when `isolated` is configured, a blank line and **your `isolated.instructions` string
+verbatim**. This is the one piece of model-facing text that comes from config rather than source.
+The value in the test config reads:
 
 > An isolated subagent runs in a throwaway sandbox under /tmp/sandboxes/&lt;sandbox id&gt;. It stays up after the job ends; run `rm -rf /tmp/sandboxes/&lt;sandbox id&gt;` when you no longer need it.
 
@@ -43,17 +66,13 @@ Then, when `isolated` is configured, a blank line and **your `isolated.instructi
 | `isolation` | isolated runs in a fresh sandbox — **this row exists only when `isolated` is configured**; with no provider the parameter is not registered at all |
 | `resumeFrom` | Job id to continue |
 
-### `job_list`
-
-Label: `List jobs`
+#### `job_list`
 
 > Every job this session started with run_command or run_agent: status, elapsed, output paths and sandbox ids.
 
 No parameters.
 
-### `job_stop`
-
-Label: `Stop job`
+#### `job_stop`
 
 > Stop a running job by its id — a shell command or a subagent.
 
@@ -61,9 +80,23 @@ Label: `Stop job`
 |---|---|
 | `id` | *(none)* |
 
-### The CLI flag
+### What you see
 
-`--jobs-depth`, described as `Internal: remaining subagent depth`. It appears in `pi --help`, not in the model's context.
+**None of the above.** Tool descriptions never appear in the TUI.
+
+What you see instead is one bold line above each tool result, holding the tool's **name**:
+
+```
+run_command
+```
+
+Each tool also registers a `label` — `Run command`, `Run agent`, `List jobs`, `Stop job` — but
+pi's interactive tool view does not display it. The names are what reach your screen.
+
+### What neither sees
+
+The CLI flag `--jobs-depth`, described as `Internal: remaining subagent depth`. It appears in
+`pi --help` only.
 
 ---
 
@@ -73,6 +106,17 @@ One section per tool. The four tools share a formatter, `describe()` in `src/job
 lines it emits differ per tool, so each is written out in full below rather than cross-referenced.
 
 A thrown error reaches the model as that tool's result, so each tool's errors are listed with it.
+
+**Your view, for all four tools, is the same text the model gets.** The extension registers no
+`renderResult`, so pi falls back to printing the model's own text: the first 10 lines, inside its
+standard coloured tool block. If there are more than 10 lines it adds
+
+```
+... (3 more lines, ctrl+o to expand)
+```
+
+`ctrl+o` expands every tool result in the transcript; clicking one result expands just that one.
+Each per-tool section below therefore describes one text, read by both of you.
 
 ### `run_command` — result of a successful call
 
@@ -94,14 +138,19 @@ output: /home/rmng/.pi/agent/jobs/01a09638-0a27-72de-9e2b-7cf185110453/output
 ```
 
 - `<job id>` is a uuidv7.
-- The status is **always** `[running]`. `run_command` returns the moment the job starts, so the
-  model never sees any other status from this tool.
+- The status is **always** `[running]`. `run_command` returns the moment the job starts, so neither
+  reader ever sees another status from this tool.
 - The elapsed field is **always** `0s` for the same reason.
 - `<label>` is the `command` argument: leading and trailing whitespace stripped, first line only,
   and if that line is longer than 120 characters it is cut at 120 and `…` is appended.
 - There is **no** `result:` line. That line belongs to agent jobs only.
 - There is **no** `sandbox:` line.
 - `<agent dir>` is `$PI_CODING_AGENT_DIR`, or `~/.pi/agent` when that is unset.
+
+Three lines is under the 10-line preview, so you see all of it without expanding.
+
+The model needs the job id, because `job_stop` takes it. You never type a job id, so for you the
+first line carries one useful word, `running`, in front of a 36-character uuid.
 
 ### `run_command` — errors
 
@@ -152,6 +201,8 @@ result: /home/rmng/.pi/agent/jobs/01a0991f-e35b-7203-afe8-c73c03ac623e/result
   reports different `output:` and `result:` paths from the job it continues.
 - `<sandbox id>` is the `id` field printed by the configured `isolated.create` command.
 
+Five lines is still under the preview limit, so you see all of it.
+
 ### `run_agent` — errors
 
 Eight distinct messages. The first five are argument errors and are raised before anything runs.
@@ -168,8 +219,11 @@ Eight distinct messages. The first five are argument errors and are raised befor
 | 8 | `isolated.create ssh must start with ssh: <the ssh value>` | its `ssh` field's first word is not `ssh` |
 
 Messages 6 to 8 are reachable only when `isolated` is configured. If `isolated.create` prints
-something that is not JSON at all, the model instead sees the raw `JSON.parse` message from the
+something that is not JSON at all, both readers instead see the raw `JSON.parse` message from the
 runtime, for example `Unexpected token o in JSON at position 1`.
+
+These are written to teach the model how to fix the call. You see the same sentence, marked as an
+error by pi's own framing.
 
 ### `job_list` — result
 
@@ -195,6 +249,10 @@ no jobs
 
 Unlike `run_command` and `run_agent`, this tool can show statuses other than `[running]` and
 elapsed values other than `0s`. See "Status and elapsed" below.
+
+This is the one tool whose result routinely passes 10 lines: three jobs already do. Past that you
+see a preview and `ctrl+o` to see the rest. `/jobs` is the human equivalent and shows running jobs
+only, one line each — see section E.
 
 ### `job_list` — errors
 
@@ -255,15 +313,18 @@ for example `9s`, `3m58s`, `2h04m`.
 
 ## C. Injected messages
 
-Two kinds, three sources. They enter the conversation and stay there.
+Two kinds, three sources. They enter the conversation and stay there. All three are visible to
+both readers, with different framing.
 
 ### A finished `run_command` job's notification
 
 Sent by the extension, not by a tool, when a command job started with a **number** for
 `timeoutSeconds` ends. A command job started with `null` never sends this.
 
-Delivered as a custom message of type `pi-background`, with `deliverAs: "followUp"` and
-`triggerTurn: true`, so it wakes the agent for a new turn. It is wrapped in tags:
+#### What the model sees
+
+A custom message of type `pi-background`, with `deliverAs: "followUp"` and `triggerTurn: true`, so
+it wakes the agent for a new turn. Wrapped in tags:
 
 ```
 <pi-background>
@@ -280,11 +341,32 @@ replaced by the job's final status and its real duration. There is no `result:` 
 The message carries **no instruction**. The "end your turn rather than polling" wording exists
 only in the tool description in A.
 
+#### What you see
+
+The same text, because the message is sent with `display: true`. pi gives it a bold label naming
+the custom type, a blank line, and then renders the body as Markdown:
+
+```
+[pi-background]
+
+<pi-background>
+01a0962c-6dd4-73cf-8ad4-e807ce713de8  [done]  20s
+ran: sleep 20; echo finished
+output: /home/rmng/.pi/agent/jobs/01a0962c-6dd4-73cf-8ad4-e807ce713de8/output
+</pi-background>
+```
+
+The `<pi-background>` tags are shown to you literally. They exist to bound the block for the model
+and have no meaning for a reader, so you see the type named twice — once by pi's label and once by
+the opening tag.
+
 ### A finished `run_agent` job's notification
 
 Sent on the same mechanism, with the same `pi-background` type and the same wrapping tags. Every
 agent job sends one: `run_agent` requires a number for `timeoutSeconds`, so the null case that
 silences a command job cannot occur here.
+
+#### What the model sees
 
 Without a sandbox:
 
@@ -305,10 +387,18 @@ not quote it: the model must read the file.
 
 Like the command notification, this carries no instruction.
 
+#### What you see
+
+The same text under the same `[pi-background]` label. The subagent's answer is **not** shown to
+you either — it is in the `result:` file. In practice you learn what the subagent said one turn
+later, when the model reads that file and tells you.
+
 ### The nudge
 
-Sent as an ordinary user message, as if the person had typed it. At most **five** per user turn;
-the counter resets on the next input that did not come from this extension.
+Sent as an ordinary user message, as if you had typed it. At most **five** per user turn; the
+counter resets on the next input that did not come from this extension.
+
+#### What the model sees
 
 > You said you would &lt;action&gt;, but did not. Continue.
 
@@ -325,24 +415,80 @@ than five nudges have been sent this turn, **no awaited job is running**, the la
 assistant message that did not end in an error or an abort, its text is non-empty, and the
 classifier replied with something other than `NO`.
 
+#### What you see
+
+The same sentence, in a user message block indistinguishable from one you typed. Nothing marks it
+as machine-written. If you are watching the screen, a nudge looks like you sending a message you
+do not remember sending.
+
 ---
 
 ## D. The nudge classifier's prompt
 
-Sent to `nudgeModel`, never to the session. System prompt:
+Sent to `nudgeModel`. **Neither the session model nor you ever sees it.**
+
+System prompt:
 
 > Below is an assistant message that ended a turn. If it promised a next action that it did not perform, reply with that action in at most 15 words. Otherwise reply with exactly: NO
 
-The single user message is the last assistant message's text, with nothing added — no framing, no session context, no tool history.
+The single user message is the last assistant message's text, with nothing added — no framing, no
+session context, no tool history.
 
-Its reply is read as: empty → throw; `NO` (any case) → no nudge; anything else → the action.
+Its reply is read as: empty → throw; `NO` (any case) → no nudge; anything else → the action, which
+then reaches both readers as the nudge in C.
 
 ---
 
-## E. Text that reaches you, never the model
+## E. Text only you see
 
-Listed so the boundary is auditable. These are thrown or logged outside a tool call, so pi shows
-them as an extension error or on stderr.
+The model never receives any of the following. That boundary is deliberate and is worth being able
+to audit, which is why they are listed here.
+
+### The job counter under the editor
+
+A one-line widget below the input box, present only while at least one job is running:
+
+| Running jobs | Text |
+|---|---|
+| 1 command | `1 command` |
+| 2 commands | `2 commands` |
+| 1 subagent | `1 subagent` |
+| 2 commands and 1 subagent | `2 commands, 1 subagent` |
+| none | the widget is removed |
+
+This is pure UI. It is not a session entry and is never saved.
+
+### The `/jobs` listing
+
+`/jobs` is described in pi's command list as:
+
+> List running jobs (shown to you only, never sent to the model)
+
+It writes a session entry of a custom type that pi keeps out of the model's context by design. One
+line per **running** job — finished jobs are not listed, and a job appearing in the list is
+therefore running by definition:
+
+```
+cmd    3m58s  sleep 400
+cmd    3m58s  sleep 400
+agent  3m58s  Run the shell command: sleep 300. Then reply DONE.
+```
+
+The format is: `cmd` or `agent` padded to 5 characters, the elapsed time right-aligned in 6, two
+spaces, the job's label, and for a sandboxed job ` · <sandbox id>` appended.
+
+No job id, because you are not the one calling `job_stop`. No status, because everything listed is
+running.
+
+When nothing is running:
+
+```
+No jobs running.
+```
+
+### Configuration and startup errors
+
+Thrown or logged outside a tool call, so pi shows them as an extension error or on stderr.
 
 | Where | Text |
 |---|---|
@@ -354,15 +500,47 @@ them as an extension error or on stderr.
 | `agent_settled` | `nudge classifier failed: <provider error>` |
 | `agent_settled` | `nudge classifier produced no text: <model> at thinking "<level>" within 2048 tokens` |
 
-The widget under the editor (`2 commands, 1 subagent`) and the `/jobs` listing are also yours
-alone. The widget is UI, and `/jobs` writes a `custom` session entry, which pi keeps out of LLM
-context by design — unlike `sendMessage`, which is how job completions do reach the model.
-
 The three `agent_settled` ones recur at every turn end until the configuration is fixed. That is
 deliberate: there is no latch, so a broken classifier cannot go quiet.
 
 ---
 
-## What this extension does **not** say to the model
+## F. Text neither reads
 
-No system-prompt contribution, no `promptSnippet`, no `promptGuidelines`, no skills, no prompt templates. Everything above is the complete surface. A session with this extension loaded and no jobs running carries only the four tool descriptions.
+Written to disk, read by nobody unless asked for:
+
+| File | Holds |
+|---|---|
+| `<agent dir>/jobs/<job id>/output` | the job's stdout — the raw JSON event stream for an agent job |
+| `<agent dir>/jobs/<job id>/stderr` | an agent child's stderr |
+| `<agent dir>/jobs/<job id>/result` | an agent job's final assistant message, as plain text |
+| `<agent dir>/state/<pid>.json` | the activity file: pid, process start time, session id, cwd, and `active` or `idle` |
+
+The model reaches `output` and `result` only by reading the paths the tool results gave it. The
+activity file is for RMNG, not for either reader.
+
+---
+
+## Why the two views are identical for tool results
+
+pi lets a tool return two separate things: `content`, which goes to the model, and `details`, which
+is stored for the UI and is never put in the request to the provider. A tool can then supply a
+`renderResult` function that draws whatever it likes from `details`.
+
+This extension supplies none, so pi falls back to printing the model's own `content` at you. That
+is why section B has one text and not two.
+
+The consequence is visible in every `run_command` result: the uuid exists because `job_stop` takes
+it, and you are shown it even though you never type one. Adding `renderResult` would separate the
+two views without changing a single character the model reads.
+
+The same applies to the notifications in C: `registerMessageRenderer` would let the
+`[pi-background]` blocks render for you without their tags.
+
+---
+
+## What this extension never says to the model
+
+No system-prompt contribution, no `promptSnippet`, no `promptGuidelines`, no skills, no prompt
+templates. Sections A to D are the complete surface. A session with this extension loaded and no
+jobs running carries only the four tool descriptions.
