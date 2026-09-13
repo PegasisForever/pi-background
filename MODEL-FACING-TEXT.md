@@ -17,7 +17,7 @@ Errors thrown from a tool reach the model as that tool's result, so they are in 
 
 Label: `Run command`
 
-> Start a shell command in the background and return immediately. Give timeoutSeconds a number for work you are waiting on: the result is delivered to you automatically when it ends, so end your turn rather than polling or sleeping. Give it null for a service that runs until stopped and never notifies.
+> Start a shell command in the background and return immediately. Give timeoutSeconds a number for work you are waiting on: the result is delivered to you automatically when it ends, so end your turn rather than polling or sleeping. Give it null for a service that runs until stopped and never notifies. It returns a job id, which job_list and job_stop take.
 
 | Parameter | Description |
 |---|---|
@@ -29,7 +29,7 @@ Label: `Run command`
 
 Registered only when the session has depth left. Label: `Run agent`
 
-> Start a subagent on a task and return immediately. The result is delivered to you automatically when it finishes, so end your turn rather than polling or sleeping. The subagent starts with no context: put everything it needs in the task.
+> Start a subagent on a task and return immediately. The result is delivered to you automatically when it finishes, so end your turn rather than polling or sleeping. The subagent starts with no context: put everything it needs in the task. It returns a job id, which job_list and job_stop take.
 
 Then, when `isolated` is configured, a blank line and **your `isolated.instructions` string verbatim**. This is the one piece of model-facing text that comes from config rather than source. The value in the test config reads:
 
@@ -47,7 +47,7 @@ Then, when `isolated` is configured, a blank line and **your `isolated.instructi
 
 Label: `List jobs`
 
-> List this session's jobs with their status, output paths and sandbox ids.
+> Every job this session started with run_command or run_agent: status, elapsed, output paths and sandbox ids.
 
 No parameters.
 
@@ -55,7 +55,7 @@ No parameters.
 
 Label: `Stop job`
 
-> Stop a running job.
+> Stop a running job by its id — a shell command or a subagent.
 
 | Parameter | Description |
 |---|---|

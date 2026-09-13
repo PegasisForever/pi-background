@@ -173,7 +173,7 @@ export default function (pi: ExtensionAPI) {
 				"Start a shell command in the background and return immediately. Give timeoutSeconds a " +
 				"number for work you are waiting on: the result is delivered to you automatically when it " +
 				"ends, so end your turn rather than polling or sleeping. Give it null for a service that " +
-				"runs until stopped and never notifies.",
+				"runs until stopped and never notifies. It returns a job id, which job_list and job_stop take.",
 			parameters: Type.Object({
 				command: Type.String({ description: "Shell command" }),
 				cwd: Type.Optional(Type.String({ description: "Working directory" })),
@@ -200,7 +200,8 @@ export default function (pi: ExtensionAPI) {
 				description:
 					"Start a subagent on a task and return immediately. The result is delivered to you " +
 					"automatically when it finishes, so end your turn rather than polling or sleeping. " +
-					"The subagent starts with no context: put everything it needs in the task." +
+					"The subagent starts with no context: put everything it needs in the task. It returns a " +
+					"job id, which job_list and job_stop take." +
 					(config.isolated ? `\n\n${config.isolated.instructions}` : ""),
 				parameters: Type.Object({
 					task: Type.String({ description: "The complete instruction for the subagent" }),
@@ -271,7 +272,9 @@ export default function (pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "job_list",
 			label: "List jobs",
-			description: "List this session's jobs with their status, output paths and sandbox ids.",
+			description:
+				"Every job this session started with run_command or run_agent: status, elapsed, output " +
+				"paths and sandbox ids.",
 			parameters: Type.Object({}),
 			async execute() {
 				const all = jobs.list();
@@ -283,7 +286,7 @@ export default function (pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "job_stop",
 			label: "Stop job",
-			description: "Stop a running job.",
+			description: "Stop a running job by its id — a shell command or a subagent.",
 			parameters: Type.Object({ id: Type.String() }),
 			async execute(_id, params) {
 				const job = await jobs.stop(params.id);
