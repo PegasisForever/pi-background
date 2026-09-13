@@ -155,6 +155,10 @@ them as an extension error or on stderr.
 | `agent_settled` | `nudge classifier produced no text: <model> at thinking "<level>" within 2048 tokens` |
 | stderr | `pi-jobs: <job id> settled but reporting failed: <error>` |
 
+The widget under the editor (`2 commands, 1 subagent`) and the `/jobs` listing are also yours
+alone. The widget is UI, and `/jobs` writes a `custom` session entry, which pi keeps out of LLM
+context by design — unlike `sendMessage`, which is how job completions do reach the model.
+
 The three `agent_settled` ones recur at every turn end until the configuration is fixed. That is
 deliberate: there is no latch, so a broken classifier cannot go quiet.
 

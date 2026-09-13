@@ -110,6 +110,22 @@ this cannot.
 The sandbox id in a row matters because there is no `job_release`: it is what the destroy command
 takes, and this is where the model finds it again after a compaction.
 
+### §2.1 Two surfaces for you, not the model
+
+A widget under the editor counts what is live, and hides when nothing is:
+
+```
+2 commands, 1 subagent
+```
+
+`/jobs` lists them in full — id, status, elapsed, paths — as a durable entry. Both read the same
+`running()` view the tools do.
+
+Neither reaches the model. A widget is UI, and `appendEntry` writes a `custom` session entry,
+which pi keeps out of LLM context by design — unlike `sendMessage`, which is how a job completion
+does reach the model. So watching the fleet costs no tokens, which is why `job_list` can stay
+terse for the model while `/jobs` prints everything for you.
+
 There is still no `job_logs`. Output is one file and pi has `read`. Live status across several
 jobs is not one file, which is the difference.
 

@@ -7,6 +7,7 @@ import {
 	ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
@@ -106,7 +107,22 @@ export default function (pi: ExtensionAPI) {
 	const statePath = join(STATE_DIR, `${process.pid}.json`);
 	const started = procStart();
 
+	/** Human-only: a count under the editor, and a durable listing from /jobs. */
+	function refreshStatus(ctx: ExtensionContext): void {
+		const live = jobs.running();
+		const commands = live.filter((j) => j.kind === "command").length;
+		const agents = live.length - commands;
+		const parts = [
+			commands > 0 ? `${commands} command${commands > 1 ? "s" : ""}` : undefined,
+			agents > 0 ? `${agents} subagent${agents > 1 ? "s" : ""}` : undefined,
+		].filter((p) => p !== undefined);
+		ctx.ui.setWidget("pi-jobs", parts.length ? [parts.join(", ")] : undefined, {
+			placement: "belowEditor",
+		});
+	}
+
 	function refreshActivity(ctx: ExtensionContext): void {
+		refreshStatus(ctx);
 		const body = JSON.stringify({
 			pid: process.pid,
 			procStart: started,
@@ -164,6 +180,22 @@ export default function (pi: ExtensionAPI) {
 		nudgesThisTurn += 1;
 		pi.sendUserMessage(`You said you would ${action}, but did not. Continue.`);
 	}
+
+	pi.registerEntryRenderer<{ lines: string[] }>("pi-jobs-listing", (entry, _options, theme) => {
+		const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
+		for (const line of entry.data?.lines ?? []) box.addChild(new Text(line, 0, 0));
+		return box;
+	});
+
+	pi.registerCommand("jobs", {
+		description: "List running jobs (shown to you only, never sent to the model)",
+		handler: async () => {
+			const live = jobs.running();
+			pi.appendEntry("pi-jobs-listing", {
+				lines: live.length === 0 ? ["No jobs running."] : live.map((j) => jobs.describe(j)),
+			});
+		},
+	});
 
 	function registerTools(): void {
 		const isolated = config.isolated;
@@ -319,7 +351,8 @@ export default function (pi: ExtensionAPI) {
 		refreshActivity(ctx);
 	});
 
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async (_event, ctx) => {
+		ctx.ui.setWidget("pi-jobs", undefined);
 		await jobs.shutdown();
 		rmSync(statePath);
 	});

@@ -49,6 +49,7 @@ export function init(pi: ExtensionAPI, activityRefresh: () => void): void {
 export const list = (): Job[] => [...jobs.values()];
 export const get = (id: string): Job | undefined => jobs.get(id);
 const isAwaited = (job: Job): boolean => job.timeoutSeconds !== null;
+export const running = (): Job[] => list().filter((j) => j.status === "running");
 export const activeCount = (): number =>
 	list().filter((j) => j.status === "running" && isAwaited(j)).length;
 
