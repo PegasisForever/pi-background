@@ -104,8 +104,9 @@ Two optional files, shallow-merged, project over user:
 ```
 
 The extension does not know what a sandbox is, and never destroys one. `instructions` is appended
-verbatim to the `run_agent` description, so telling the agent how to clean up is your job and costs
-one string.
+verbatim to the **result of a `run_agent` call that actually made a sandbox** — not to the tool
+description, which every turn would pay for whether a sandbox was used or not. Telling the agent how
+to clean up is your job and costs one string, on the calls that need it.
 
 An unknown key, a wrong type or a bad thinking level is a startup error, not a shrug.
 
