@@ -30,8 +30,24 @@ supervisor does not need a second model to guess whether a session is working.
 
 ## Install
 
+Straight from GitHub:
+
 ```
-pi install /path/to/pi-background
+pi install git:github.com/PegasisForever/pi-background
+```
+
+Or from a clone, which is what you want if you are editing it:
+
+```
+git clone https://github.com/PegasisForever/pi-background
+pi install ./pi-background
+```
+
+Add `-l` to either to install into the current project instead of your user settings. To pull a
+newer version later:
+
+```
+pi update git:github.com/PegasisForever/pi-background
 ```
 
 Nothing else is required. Local commands and local subagents work with no configuration at all.
