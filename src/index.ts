@@ -105,27 +105,30 @@ const TimeoutParam = Type.Number({
 /** What a tool tells the TUI and never tells the model. */
 interface Shown {
 	lines: string[];
+	/** The first line is a table heading, so it is dimmed rather than read as data. */
+	heading?: boolean;
 }
 
-/** A block of our own: pi does not wrap a custom renderer, so it pads and tints itself. */
-const block = (theme: Theme, lines: string[]): Component => {
-	const box = new Box(1, 1, (t: string) => theme.bg("customMessageBg", t));
-	for (const line of lines) box.addChild(new Text(theme.fg("customMessageText", line), 0, 0));
+const fill = (box: Box, theme: Theme, colour: "customMessageText" | "toolOutput", shown: Shown) => {
+	shown.lines.forEach((line, i) =>
+		box.addChild(new Text(theme.fg(shown.heading && i === 0 ? "muted" : colour, line), 0, 0)),
+	);
 	return box;
 };
 
+/** A block of our own: pi does not wrap a custom renderer, so it pads and tints itself. */
+const block = (theme: Theme, shown: Shown): Component =>
+	fill(new Box(1, 1, (t: string) => theme.bg("customMessageBg", t)), theme, "customMessageText", shown);
+
 /** Lines inside pi's tool shell, which already pads. A second Box would indent them again. */
-const rows = (theme: Theme, lines: string[]): Component => {
-	const box = new Box(0, 0);
-	for (const line of lines) box.addChild(new Text(theme.fg("toolOutput", line), 0, 0));
-	return box;
-};
+const rows = (theme: Theme, shown: Shown): Component =>
+	fill(new Box(0, 0), theme, "toolOutput", shown);
 
 const header = (theme: Theme, name: string, title?: string): Component =>
 	new Text(theme.fg("toolTitle", theme.bold(name)) + (title ? ` ${title}` : ""), 0, 0);
 
 const shown = (result: { details?: Shown }, theme: Theme): Component =>
-	rows(theme, result.details?.lines ?? []);
+	rows(theme, result.details ?? { lines: [] });
 
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag("jobs-depth", { type: "string", description: "Internal: remaining subagent depth" });
@@ -213,7 +216,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.registerEntryRenderer<Shown>("pi-background-listing", (entry, _options, theme) =>
-		block(theme, entry.data?.lines ?? []),
+		block(theme, entry.data ?? { lines: [] }),
 	);
 
 	pi.registerMessageRenderer<Shown>("pi-background", (message, _options, theme) => {
@@ -229,7 +232,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("jobs", {
 		description: "List running jobs (shown to you only, never sent to the model)",
 		handler: async () => {
-			pi.appendEntry<Shown>("pi-background-listing", { lines: jobs.summariseAll() });
+			pi.appendEntry<Shown>("pi-background-listing", { lines: jobs.table(), heading: true });
 		},
 	});
 
@@ -383,7 +386,7 @@ export default function (pi: ExtensionAPI) {
 			async execute() {
 				return {
 					content: [{ type: "text", text: jobs.listing() }],
-					details: { lines: jobs.summariseAll() },
+					details: { lines: jobs.table(), heading: true },
 				};
 			},
 			renderCall: (_params, theme) => header(theme, "job_list"),

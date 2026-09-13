@@ -290,13 +290,14 @@ no jobs running
 
 #### What you see
 
-Exactly what `/jobs` prints — one line per running job:
+Exactly what `/jobs` prints — the running jobs as a table:
 
 ```
 job_list
-cmd      0s  long sleeper
-cmd      0s  quick failure
-agent    0s  greeter
+job id                                type     title                elapsed  timeout
+01a09a13-04cf-73d2-88ce-082fbf7c871f  command  long sleeper              2s     none
+01a09a13-04d2-73d2-88ce-0831f03dcabb  command  build the docs site       1s     600s
+01a09a13-04d2-73d2-88ce-08326fada276  agent    greeter                   1s     300s
 ```
 
 #### Errors
@@ -523,21 +524,22 @@ This is pure UI. It is not a session entry and is never saved.
 > List running jobs (shown to you only, never sent to the model)
 
 It writes a session entry of a custom type that pi keeps out of the model's context by design. One
-line per running job:
+row per running job, under a dimmed heading:
 
 ```
-cmd    3m58s  long sleeper
-cmd    3m58s  quick failure
-agent  3m58s  greeter
+job id                                type     title                elapsed  timeout
+01a09a13-04cf-73d2-88ce-082fbf7c871f  command  long sleeper             15s     none
+01a09a13-04d2-73d2-88ce-0831f03dcabb  command  build the docs site      15s     600s
 ```
 
-The format is: `cmd` or `agent` padded to 5 characters, the elapsed time right-aligned in 6, two
-spaces, the job's title, and for a sandboxed job ` · <sandbox id>` appended.
+Five columns: `job id`, `type` (`command` or `agent`), `title`, `elapsed`, `timeout`. Every column
+is sized to its widest cell; the two durations are right-aligned. `timeout` is `none` for a
+service.
 
-No job id, because you are not the one calling `job_stop`. No status, because everything listed is
-running. This is the same listing `job_list` shows you.
+No status column, because everything listed is running. No sandbox id: it is in `job_list`'s
+model-facing rows, not here. This is the same table `job_list` shows you.
 
-When nothing is running:
+When nothing is running, the whole entry is one line and there is no heading:
 
 ```
 No jobs running.

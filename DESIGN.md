@@ -133,7 +133,7 @@ and only `content` reaches the provider; `renderCall` and `renderResult` draw fr
 | Surface | The model | You |
 |---|---|---|
 | Starting a job | prose, the id, the output path | `run_command deploy staging` and `Timeout: 60s` |
-| `job_list` | grouped records with ids and paths | the `/jobs` lines |
+| `job_list` | grouped records with ids and paths | the `/jobs` table |
 | `job_stop` | final state, elapsed, path | the tool line alone; the counter is the rest of the answer |
 | A completion | the tagged record and the path | one sentence, and the exit code for a command |
 
@@ -144,20 +144,25 @@ when nothing is:
 2 commands, 1 subagent
 ```
 
-`/jobs` lists them one line each, as a durable entry:
+`/jobs` lists them as a table, as a durable entry: `job id`, `type`, `title`, `elapsed`, `timeout`,
+each column sized to its widest cell, durations right-aligned, the heading dimmed.
 
 ```
-cmd    3m58s  deploy staging
-agent  1h10m  auth diff review  · sb-4998-30927
+job id                                type     title             elapsed  timeout
+01a09a13-04cf-73d2-88ce-082fbf7c871f  command  deploy staging       3m58s     600s
+01a09a13-04d2-73d2-88ce-0831f03dcabb  agent    auth diff review     1h10m    7200s
 ```
 
-No id and no status: a listed job is running by definition, and you are not the one calling
-`job_stop` — the model is, and it has the id from the tool result. `appendEntry` writes a `custom`
-session entry, which pi keeps out of LLM context by design.
+No status column: a listed job is running by definition. `appendEntry` writes a `custom` session
+entry, which pi keeps out of LLM context by design, so this costs no tokens however often you
+look.
 
-The whole of your side is titles and elapsed time. The command, the task, the ids and the paths
-never reach your screen. That is the trade `title` buys (§1): a good title is a better line than
-a truncated command, and a bad one is all you get.
+The id is here because it is the one thing that lets you line up a row with what the model said
+about it. Nothing else on your side carries one.
+
+What is missing from your side is the command and the task themselves. A row says what the model
+called a job, not what it ran. That is the trade `title` buys (§1): a good title is a better line
+than a truncated command, and a bad one is all you get.
 
 The model-facing half of every string in this table is transcribed verbatim in
 `MODEL-FACING-TEXT.md`, alongside yours, so the boundary can be audited without reading the code.

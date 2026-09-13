@@ -269,10 +269,36 @@ export function notificationForYou(job: Job): string[] {
 	return lines;
 }
 
-/** One line per job, for a person reading /jobs. */
-export const summarise = (job: Job): string =>
-	`${(job.kind === "command" ? "cmd" : "agent").padEnd(5)} ${elapsed(job).padStart(6)}  ${job.title}` +
-	(job.sandboxId ? `  · ${job.sandboxId}` : "");
+const HEADINGS = ["job id", "type", "title", "elapsed", "timeout"];
+/** The last two columns hold durations, which read wrong ragged. */
+const RIGHT = [false, false, false, true, true];
+
+/**
+ * Every running job as a table, for a person reading /jobs or watching job_list.
+ * The first row is the heading; an empty table is one line and no heading.
+ */
+export function table(): string[] {
+	const live = running();
+	if (live.length === 0) return ["No jobs running."];
+	const cells = live.map((j) => [
+		j.id,
+		j.kind === "command" ? "command" : "agent",
+		j.title,
+		elapsed(j),
+		timeoutText(j),
+	]);
+	const width = HEADINGS.map((h, i) =>
+		Math.max(h.length, ...cells.map((row) => (row[i] as string).length)),
+	);
+	const line = (row: string[]): string =>
+		row
+			.map((cell, i) =>
+				RIGHT[i] ? cell.padStart(width[i] as number) : cell.padEnd(width[i] as number),
+			)
+			.join("  ")
+			.trimEnd();
+	return [line(HEADINGS), ...cells.map(line)];
+}
 
 const size = (path: string): number => {
 	try {
@@ -283,9 +309,3 @@ const size = (path: string): number => {
 };
 
 const text = (err: unknown): string => (err instanceof Error ? err.message : String(err));
-
-/** Every running job as one line each, for /jobs and for the TUI side of job_list. */
-export const summariseAll = (): string[] => {
-	const live = running();
-	return live.length === 0 ? ["No jobs running."] : live.map(summarise);
-};
