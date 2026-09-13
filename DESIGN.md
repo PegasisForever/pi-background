@@ -441,9 +441,12 @@ mean the same thing and neither is the answer, so `finalise` takes the status fr
 discards the runner's version. Without that, the same stop reads differently depending on which
 kind of job it was, and both readings are noise.
 
-A command job passes the signal to `exec`, which kills the process tree. An agent job passes it to
-`spawn`, which kills the child; for an isolated job that closes the `ssh` connection and the
-remote pi exits on stdin EOF.
+A command job passes the signal to `exec`, which kills the process tree — verified: aborting a
+command whose shell had started a child left neither running. An agent job passes it to `spawn`,
+which signals the child **alone, not its tree**. That is enough because the child is pi, which
+kills what it started when it is signalled; it is not enough if that pi dies without cleaning up,
+and §12.10 is what happens then. For an isolated job the signal closes the `ssh` connection and
+the remote pi exits on stdin EOF.
 
 ### §5.2a The overrun clock
 
@@ -791,9 +794,16 @@ Written down so that when one bites, the real shape is handled rather than the i
    sandbox. This is the one place where opening someone else's repository would run their command.
 9. **The nudge text stays in the transcript.**
 10. **A wedged child blocks shutdown.** `job_stop` and `session_shutdown` both wait for a job to
-    settle. If a child ignores `SIGTERM`, or an `ssh` hangs on a dead network, that wait has no
-    bound. A timeout here would be a constant with nothing behind it, so it stays unhandled until
-    the log shows the real shape.
+    settle, and two different things can make that wait unbounded. A child that ignores `SIGTERM`,
+    or an `ssh` that hangs on a dead network, never exits. And a subagent settles on `close`, which
+    waits for stdout to drain: a descendant that outlives the child holds the inherited pipes open,
+    so `close` never fires even though the child is gone. Measured, with the same shape as
+    `runAgent`: aborting a `spawn` whose child had started a grandchild left the grandchild running
+    and reparented to init, and `close` had still not fired two seconds later. The fix is what pi
+    does internally — settle on `exit` plus a bounded drain — because settling on `exit` alone
+    would risk losing the subagent's last message, which is read from `output` at settle. A timeout
+    here would be a constant with nothing behind it, so both stay unhandled until a real session
+    shows the shape.
 11. **An isolated sandbox must have this extension available to the child.** The child is started
     with `--jobs-depth`, a flag this extension registers, so a sandbox without it fails at once
     with `Error: Unknown option: --jobs-depth`. That is loud, and it is the sandbox image's job to

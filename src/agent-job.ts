@@ -55,7 +55,9 @@ export function runAgent(job: Job, run: AgentRun): Promise<Outcome> {
 		child.stderr.pipe(createWriteStream(join(job.dir, "stderr")));
 		child.stdin.on("error", (err) => (failure ??= err.message));
 		child.on("error", (err) => (failure = err.message));
-		// 'close' always fires, including after 'error', so it is the only settle point.
+		// 'close' fires after 'error' too, and only once stdout has drained, which is what
+		// finalText needs. It is not guaranteed: a surviving descendant holding the inherited
+		// pipes keeps it from firing even after the child is gone (§12.10 of DESIGN.md).
 		child.on("close", (code, signal) =>
 			resolve(
 				code === 0 && !failure
