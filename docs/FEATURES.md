@@ -158,8 +158,8 @@ stdout. The extension then uses that SSH command as the transport, and calls a m
 teardown command when the job ends.
 
 ```jsonc
-// ~/.pi/agent/pi-background.json
-{
+// ~/.pi/agent/settings.json
+"pi-background": {
   "isolated": {
     "create":  "rmng-sandbox-create",   // prints: ssh -o ... rmng@10.99.0.31
     "destroy": "rmng-sandbox-destroy {id}"

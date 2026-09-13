@@ -309,7 +309,7 @@ tool.
 | # | Message | Raised when |
 |---|---|---|
 | 1 | `This session has no subagent depth left, so it cannot start one. Do the work here.` | the session is a subagent at the configured depth |
-| 2 | `No sandbox provider is configured, so isolation "isolated" cannot be used. Set "isolated" in pi-background.json, or leave isolation out and the subagent runs here.` | `isolation: "isolated"` with no `isolated` in the config |
+| 2 | `No sandbox provider is configured, so isolation "isolated" cannot be used. Set "isolated" in settings.json, or leave isolation out and the subagent runs here.` | `isolation: "isolated"` with no `isolated` in the config |
 | 3 | `isolated.create failed: <stderr, trimmed>` | the configured `isolated.create` command exits non-zero |
 | 4 | `isolated.create must print {id, ssh, cwd}: <stdout, trimmed>` | its output parses as JSON but is missing `id`, `ssh` or `cwd` |
 | 5 | `isolated.create ssh must start with ssh: <the ssh value>` | its `ssh` field's first word is not `ssh` |
@@ -695,10 +695,11 @@ Thrown or logged outside a tool call, so pi shows them as an extension error or 
 
 | Where | Text |
 |---|---|
-| `session_start` | `<file> + <file>: unknown key "<key>". The keys are maxDepth, nudgeModel, nudgeThinking, isolated.` |
-| `session_start` | `<file> + <file>: "<key>" is <value>, which that key does not take.` |
-| `session_start` | `<file> is not valid JSON: <parser message>` |
-| `session_start` | `pi-background.json: nudgeModel and nudgeThinking must be set together` |
+| load | `<file> + <file>: "pi-background": unknown key "<key>". The keys are maxDepth, nudgeModel, nudgeThinking, isolated.` |
+| load | `<file> + <file>: "pi-background": "<key>" is <value>, which that key does not take.` |
+| load | `<file> is not valid JSON: <parser message>` |
+| load | `<file>: "pi-background" must be a JSON object.` |
+| load | `settings.json: "pi-background": nudgeModel and nudgeThinking must be set together` |
 | `session_start` | `pi-background: --jobs-depth must be a whole number, got "<value>"` |
 | startup | `pi-background: could not read starttime from /proc/self/stat` |
 | `agent_settled` | `nudgeModel not found: <model>` |

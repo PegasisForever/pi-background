@@ -73,15 +73,17 @@ Nothing else is required. Local commands and local subagents work with no config
 
 ## Configure
 
-Two optional files, shallow-merged, project over user:
+Under `"pi-background"` in Pi's own `settings.json` â€” the same file `pi-powerline-footer` uses, so
+there is one file to edit, not one per extension. Two of them, shallow-merged, project over user:
 
 ```
-~/.pi/agent/pi-background.json      everywhere
-<project>/.pi/pi-background.json    this project only
+~/.pi/agent/settings.json      everywhere
+<project>/.pi/settings.json    this project only
 ```
 
 ```jsonc
-{
+// settings.json
+"pi-background": {
   // How deep a chain of subagents may go. Absent means 1.
   "maxDepth": 1,
 
@@ -108,7 +110,8 @@ verbatim to the **result of a `run_agent` call that actually made a sandbox** â€
 description, which every turn would pay for whether a sandbox was used or not. Telling the agent how
 to clean up is your job and costs one string, on the calls that need it.
 
-An unknown key, a wrong type or a bad thinking level is a startup error, not a shrug.
+An unknown key, a wrong type or a bad thinking level stops the extension loading, with a message
+naming the key. It is not a shrug, and it is not a session that quietly runs on defaults.
 
 ## Tools the agent gets
 

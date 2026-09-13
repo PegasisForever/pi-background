@@ -665,12 +665,25 @@ This is the extension side. The reader is a separate change.
 
 ## §9. Config
 
-### §9.1 Two files
+### §9.1 One key, in Pi's own settings file
+
+Our settings sit under `"pi-background"` in Pi's `settings.json`, not in a file of our own. It is
+where `pi-powerline-footer` already keeps its configuration, so the user edits one file rather than
+one per extension, and Pi's own settings UI is beside it.
 
 | File | Scope |
 |---|---|
-| `~/.pi/agent/pi-background.json` | the user, everywhere |
-| `<cwd>/.pi/pi-background.json` | this project only |
+| `~/.pi/agent/settings.json` | the user, everywhere |
+| `<cwd>/.pi/settings.json` | this project only |
+
+Safe because Pi re-reads the file and spreads it before every write it makes
+(`core/settings-manager.js:381`), so a key it does not know about survives a theme change.
+
+**Read at load, not in `session_start`.** Pi drops an extension whose factory throws and reports it
+(`core/extensions/loader.js:483`); it swallows a throw from a handler and carries on. Reading in
+`session_start` meant a one-character typo left the session running on defaults it was never told it
+had fallen back to — the nudge silently off, `maxDepth` silently 1. `process.cwd()` stands in for
+`ctx.cwd`, which the factory is not given.
 
 Nothing is configured through the environment. The one value that travels from a parent to a
 child — remaining depth — is a CLI flag (§3.6): visible in `ps`, part of the command already being

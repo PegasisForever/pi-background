@@ -13,7 +13,9 @@ import * as jobs from "./jobs.ts";
 import { block, header, labelled, type Shown, shown } from "./shown.ts";
 
 const STATE_DIR = join(getAgentDir(), "state");
-const CONFIG_NAME = "pi-background.json";
+const CONFIG_NAME = "settings.json";
+/** Our own name, as the key our settings sit under inside that file. */
+const NAME = jobs.NAME;
 /** Caps reasoning plus output, so it must survive the model's thinking. */
 const CLASSIFIER_MAX_TOKENS = 2048;
 const MAX_NUDGES_PER_TURN = 5;
@@ -50,6 +52,13 @@ const ConfigSchema = Type.Object(
 );
 type Config = Static<typeof ConfigSchema>;
 
+/**
+ * Our settings live under our own name in Pi's `settings.json`, the file `pi-powerline-footer`
+ * already uses, rather than in a file of our own. Global first, then the project's, shallow merged
+ * so the project wins — the order Pi's own `SettingsManager` uses. Pi re-reads this file and spreads
+ * it before every write it makes (`core/settings-manager.js:381`), so a key it does not know about
+ * survives a theme change.
+ */
 function readConfig(cwd: string): Config {
 	const merged: Record<string, unknown> = {};
 	const sources: string[] = [];
@@ -61,15 +70,26 @@ function readConfig(cwd: string): Config {
 			if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
 			throw err;
 		}
+		const ours = section(path, parse(path, raw));
+		if (ours === undefined) continue;
 		sources.push(path);
-		Object.assign(merged, parse(path, raw));
+		Object.assign(merged, ours);
 	}
 	const wrong = problem(merged);
-	if (wrong !== undefined) throw new Error(`${sources.join(" + ")}: ${wrong}`);
+	if (wrong !== undefined) throw new Error(`${sources.join(" + ")}: "${NAME}": ${wrong}`);
 	if ((merged.nudgeModel === undefined) !== (merged.nudgeThinking === undefined)) {
-		throw new Error(`${CONFIG_NAME}: nudgeModel and nudgeThinking must be set together`);
+		throw new Error(`settings.json: "${NAME}": nudgeModel and nudgeThinking must be set together`);
 	}
 	return merged;
+}
+
+/** Our object out of one settings file, or undefined when that file says nothing about us. */
+function section(path: string, settings: Record<string, unknown>): Record<string, unknown> | undefined {
+	const ours = settings[NAME];
+	if (ours === undefined) return undefined;
+	if (ours === null || typeof ours !== "object" || Array.isArray(ours))
+		throw new Error(`${path}: "${NAME}" must be a JSON object.`);
+	return ours as Record<string, unknown>;
 }
 
 /**
@@ -122,8 +142,12 @@ const ExpectedParam = Type.Number({
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag("jobs-depth", { type: "string", description: "Internal: remaining subagent depth" });
 
-	let config: Config = {};
-	let depthRemaining = 1;
+	// At load, from `process.cwd()`, because the factory gets no context object and because Pi drops an
+	// extension whose factory throws and says so (`core/extensions/loader.js:483`), where it swallows a
+	// throw from a handler and carries on. Read in `session_start`, a one-character typo left the
+	// session running on defaults it was never told it had fallen back to.
+	const config: Config = readConfig(process.cwd());
+	let depthRemaining = config.maxDepth ?? 1;
 	let isChild = false;
 	let nudgesThisTurn = 0;
 	let runtime: ModelRuntime | undefined;
@@ -447,10 +471,6 @@ export default function (pi: ExtensionAPI) {
 		mkdirSync(STATE_DIR, { recursive: true });
 		jobs.init(pi, () => refreshActivity(ctx));
 		refreshActivity(ctx);
-		// Last, because it is the one line here that can throw: a bad config file must not stop the
-		// activity file, the job registry or anything else this session needs.
-		config = readConfig(ctx.cwd);
-		if (!isChild) depthRemaining = config.maxDepth ?? 1;
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
