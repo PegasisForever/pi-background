@@ -30,7 +30,8 @@ job early.
 
 **The whole output is always on disk.** Every command writes to `~/.pi/agent/jobs/<id>/output`. What
 the agent is shown is the last 10 lines or 1000 bytes, whichever is shorter, and the path. When that
-is not enough it reads the file.
+is not enough it reads the file. You see the same lines in the terminal, by the same rule, on every
+result and every completion message.
 
 **Subagents.** `run_agent` starts a whole `pi` process on a task, locally or inside a sandbox
 reached over SSH, and reports the same way. There is one kind of subagent: no roles, no presets, no
@@ -121,6 +122,19 @@ An unknown key, a wrong type or a bad thinking level is a startup error, not a s
 when no sandbox provider is configured. A parameter that would only ever be refused is not offered.
 
 ## What you get
+
+A command's last lines, then one line of status:
+
+```
+bash list etc
+ImageMagick-7
+UPower
+X11
+adduser.conf
+
+Finished in 0s.
+Exit code: 0
+```
 
 A count under the input box while anything is running:
 

@@ -345,14 +345,25 @@ export function overrun(job: Job): string {
 	].join("\n");
 }
 
+/**
+ * The same end of the output the model is given, as display lines, with a blank line before
+ * whatever follows it. A command that printed nothing shows nothing: the absence is the answer.
+ */
+const shownTail = (job: Job): string[] => {
+	const body = tail(job);
+	return body ? [...body.split("\n"), ""] : [];
+};
+
 /** A foreground command that ended, for a person. */
 export const finishedForYou = (job: Job): string[] => [
+	...shownTail(job),
 	`Finished in ${elapsed(job)}.`,
 	`Exit code: ${job.exitCode ?? "none"}`,
 ];
 
 /** A foreground command that outlived the wait, for a person. */
 export const handedOffForYou = (job: Job, overran: boolean): string[] => [
+	...shownTail(job),
 	overran
 		? `Still running after ${elapsed(job)}, expected ${job.expectedSeconds}s.`
 		: `Still running after ${elapsed(job)}; you stopped waiting.`,
@@ -367,11 +378,13 @@ export const overrunForYou = (job: Job): string[] => [
 /** The same completion, for a person: no id, no paths. */
 export function notificationForYou(job: Job): string[] {
 	const status = job.status as Exclude<JobStatus, "running">;
-	const lines = [
+	// An agent's output is pi's JSON event stream, which is no more readable to you than to it.
+	const lines = job.kind === "command" ? shownTail(job) : [];
+	lines.push(
 		job.kind === "command"
 			? `Background command ${job.title} ${OUTCOME[status]} in ${elapsed(job)}.`
 			: `Agent ${job.title} ${OUTCOME[status]} in ${elapsed(job)}.`,
-	];
+	);
 	if (job.kind === "command") lines.push(`Exit code: ${job.exitCode ?? "none"}`);
 	if (job.reason) lines.push(`Exit reason: ${job.reason}`);
 	return lines;

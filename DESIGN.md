@@ -162,10 +162,17 @@ pi gives this for free. A tool result carries `content` for the model and `detai
 and only `content` reaches the provider; `renderCall` and `renderResult` draw from `details`, and
 `registerMessageRenderer` does the same for a custom message. So the second text costs no tokens.
 
+**A command's output is the one thing both readers get in full.** Wherever the model is shown the
+end of a command's output, you are shown the same lines by the same rule — the last 10 or the last
+1000 bytes, whichever is shorter. Everything around them still differs: the model gets the id and
+the path it needs to act, you get one sentence and the exit code. A command that printed nothing
+shows you nothing, because the absence is the answer and `(no output)` is a line you would have to
+read. An agent's output is never shown, to either of you: it is pi's JSON event stream.
+
 | Surface | The model | You |
 |---|---|---|
-| A command that ended in front of it | its last lines, the exit code, the path | `bash run tests` and `Finished in 12s.` / `Exit code: 0` |
-| A command that outlived the wait | its last lines, the id, the path | `Still running after 60s, expected 60s.` / `Now in the background.` |
+| A command that ended in front of it | its last lines, the exit code, the path | the same last lines, then `Finished in 12s.` / `Exit code: 0` |
+| A command that outlived the wait | its last lines, the id, the path | the same last lines, then `Still running after 60s, expected 60s.` / `Now in the background.` |
 | Starting a background job | prose, the id, the output path | `bash dev server` and `Expected: none` |
 | `job_list` | grouped records with ids and paths | the `/jobs` table |
 | `job_stop` | final state, elapsed, path | the tool line alone; the counter is the rest of the answer |

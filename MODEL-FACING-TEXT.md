@@ -19,8 +19,8 @@ Every section below states both views.
 | Tool descriptions and parameter descriptions | every turn | never |
 | The `bash` prompt snippet, in the system prompt's tool list | every turn | never |
 | Tool call header | never | the tool's name and the job's title |
-| Tool results | in full | a short line the tool wrote for you alone |
-| Job completion notifications | in full | a short line, under a `[pi-background]` label |
+| Tool results | in full | a short line the tool wrote for you alone, and a command's last lines |
+| Job completion notifications | in full | a short line, under a `[pi-background]` label, and a command's last lines |
 | Job overrun notifications | in full | a short line, under a `[pi-background]` label |
 | The nudge | in full | the same text, as a user message |
 | The nudge classifier's prompt | never | never |
@@ -235,21 +235,33 @@ has a sandbox, because `bash` has no `isolation` parameter.
 
 #### What you see
 
-One of three, matching the three above.
+One of three, matching the three above. The first two carry the same end of the output the model
+was given — the last 10 lines or 1000 bytes, whichever is shorter — followed by a blank line.
 
 ```
-bash run tests
-Finished in 12s.
+bash list etc
+ImageMagick-7
+UPower
+X11
+adduser.conf
+
+Finished in 0s.
 Exit code: 0
 ```
 
 ```
-bash tick loop
+bash rows
+row-1
+row-2
+row-3
+row-4
+
 Still running after 4s, expected 4s.
 Now in the background.
 ```
 
-The second line reads `Still running after 4s; you stopped waiting.` when you interrupted.
+The line under the output reads `Still running after 4s; you stopped waiting.` when you
+interrupted. A command that printed nothing shows no output block at all, and no `(no output)`.
 
 ```
 bash dev server
@@ -499,14 +511,21 @@ only in the tool description in A.
 
 #### What you see
 
+The same end of the output, then the sentence.
+
 ```
 [pi-background]
+
+Traceback (most recent call last):
+  File "build.py", line 12
+ValueError: no such target
 
 Background command quick failure failed in 3s.
 Exit code: 7
 ```
 
-An `Exit reason:` line follows when there is one. No id, no path, no tags.
+An `Exit reason:` line follows when there is one. No id, no path, no tags. An agent's completion
+never carries output, because an agent's output is pi's JSON event stream.
 
 ### A finished `run_agent` or `resume_agent` job's notification
 
