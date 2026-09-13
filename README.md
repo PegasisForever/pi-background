@@ -12,8 +12,15 @@ allowed to be that narrow.
 
 **Background commands.** `run_command` starts a shell command and returns immediately. The agent
 ends its turn; when the command finishes, a message wakes the agent and tells it the exit code and
-where the output is. A command started with `timeoutSeconds: null` is a *service* — a dev server, a
-watcher — with no deadline. It still reports when it stops, so a crashed dev server is not silent.
+where the output is. A command started with `expectedSeconds: null` is a *service* — a dev server, a
+watcher — that nothing is waiting on. It still reports when it stops, so a crashed dev server is not
+silent.
+
+**Nothing is killed by the clock.** `expectedSeconds` is an estimate, not a deadline. When a job
+passes it the job keeps running and the agent is told: *still running after 12m, longer than the
+120s you expected. It has not been stopped. Leave it running, or stop it with job_stop.* It repeats
+at each multiple of the estimate, never more often than once every five minutes. An agent is bad at
+guessing how long work takes, and a low guess should cost a message, not the work.
 
 **Subagents.** `run_agent` starts a whole `pi` process on a task, locally or inside a sandbox
 reached over SSH, and reports the same way. There is one kind of subagent: no roles, no presets, no
@@ -94,7 +101,7 @@ An unknown key, a wrong type or a bad thinking level is a startup error, not a s
 
 | Tool | What it does |
 |---|---|
-| `run_command` | start a shell command; `timeoutSeconds: null` for a service |
+| `run_command` | start a shell command; `expectedSeconds: null` for a service |
 | `run_agent` | start a subagent, locally or in a sandbox |
 | `resume_agent` | continue a finished subagent with a follow-up task |
 | `job_list` | what is still running |
@@ -114,9 +121,9 @@ A count under the input box while anything is running:
 And `/jobs`, which is yours alone and never reaches the model:
 
 ```
-job id                                type     title                elapsed  timeout
-01a09a13-04cf-73d2-88ce-082fbf7c871f  command  long sleeper             15s     none
-01a09a13-04d2-73d2-88ce-0831f03dcabb  command  build the docs site      15s     600s
+job id                                type     title                elapsed  expected
+01a09a13-04cf-73d2-88ce-082fbf7c871f  command  long sleeper             15s      none
+01a09a13-04d2-73d2-88ce-0831f03dcabb  command  build the docs site      15s      600s
 ```
 
 Every tool and every notification writes two texts: one for the model, one for you. They are not
@@ -145,3 +152,5 @@ Written down in full in §12 of DESIGN.md. The ones worth knowing before you sta
 - A project config is read without a trust check, and it can name the command that creates a
   sandbox.
 - Jobs die when pi dies. There is no daemon.
+- A job that hangs runs until something stops it. It reports that it has overrun, every five
+  minutes, and the decision stays with the agent.

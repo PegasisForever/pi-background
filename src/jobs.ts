@@ -5,7 +5,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export type JobKind = "command" | "agent";
-export type JobStatus = "running" | "done" | "failed" | "timeout" | "stopped";
+export type JobStatus = "running" | "done" | "failed" | "stopped";
 
 export interface Job {
 	id: string;
@@ -13,7 +13,7 @@ export interface Job {
 	title: string;
 	cwd: string;
 	dir: string;
-	timeoutSeconds: number | null;
+	expectedSeconds: number | null;
 	status: JobStatus;
 	exitCode?: number | null;
 	reason?: string;
@@ -26,7 +26,13 @@ export interface Job {
 	signal: AbortSignal;
 	outputFd: number;
 	settled: Promise<void>;
+	/** Fires at every multiple of expectedSeconds while the job is still running. */
+	overrun?: NodeJS.Timeout;
+	overrunAt?: number;
 }
+
+/** A job that overruns by a second must not report every second. */
+const QUIET_MS = 5 * 60 * 1000;
 
 export interface Outcome {
 	status: Exclude<JobStatus, "running">;
@@ -51,9 +57,9 @@ export function init(pi: ExtensionAPI, activityRefresh: () => void): void {
 export const list = (): Job[] => [...jobs.values()];
 export const get = (id: string): Job | undefined => jobs.get(id);
 export const running = (): Job[] => list().filter((j) => j.status === "running");
-/** A service has no deadline, so it must not hold the session busy or silence a nudge. */
+/** A service is not waited on, so it must not hold the session busy or silence a nudge. */
 export const activeCount = (): number =>
-	running().filter((j) => j.timeoutSeconds !== null).length;
+	running().filter((j) => j.expectedSeconds !== null).length;
 
 export const outputPath = (job: Job): string => join(job.dir, "output");
 export const resultPath = (job: Job): string => join(job.dir, "result");
@@ -62,7 +68,7 @@ export interface StartOptions {
 	kind: JobKind;
 	title: string;
 	cwd: string;
-	timeoutSeconds: number | null;
+	expectedSeconds: number | null;
 	sandboxId?: string;
 	ssh?: string;
 	sessionOf?: string;
@@ -81,21 +87,22 @@ export function start(options: StartOptions, run: (job: Job) => Promise<Outcome>
 		title: options.title,
 		cwd: options.cwd,
 		dir,
-		timeoutSeconds: options.timeoutSeconds,
+		expectedSeconds: options.expectedSeconds,
 		status: "running",
 		startedAt: Date.now(),
 		sandboxId: options.sandboxId,
 		ssh: options.ssh,
 		sessionOf: options.sessionOf ?? id,
 		stop,
-		signal:
-			options.timeoutSeconds === null
-				? stop.signal
-				: AbortSignal.any([stop.signal, AbortSignal.timeout(options.timeoutSeconds * 1000)]),
+		// Nothing but job_stop ends a job early, so the abort controller is the whole story.
+		signal: stop.signal,
 		outputFd: openSync(join(dir, "output"), "a"),
 		settled: promise,
 	};
 	jobs.set(id, job);
+	if (options.expectedSeconds !== null) {
+		job.overrun = setInterval(() => reportOverrun(job), options.expectedSeconds * 1000);
+	}
 
 	void (async () => {
 		onChange();
@@ -117,11 +124,16 @@ export function start(options: StartOptions, run: (job: Job) => Promise<Outcome>
 
 /** An abort outranks whatever the runner reported, which is some flavour of "killed". */
 const abortOutcome = (job: Job): Outcome | undefined =>
-	job.stop.signal.aborted
-		? { status: "stopped" }
-		: job.signal.aborted
-			? { status: "timeout" }
-			: undefined;
+	job.stop.signal.aborted ? { status: "stopped" } : undefined;
+
+/** The job keeps running: this tells the model it has overrun and lets it decide. */
+function reportOverrun(job: Job): void {
+	const now = Date.now();
+	if (shuttingDown || job.status !== "running") return;
+	if (job.overrunAt !== undefined && now - job.overrunAt < QUIET_MS) return;
+	job.overrunAt = now;
+	send(overrun(job), overrunForYou(job));
+}
 
 export const write = (job: Job, chunk: Buffer | string): void => appendFileSync(job.outputFd, chunk);
 
@@ -131,20 +143,20 @@ function finalise(job: Job, outcome: Outcome): void {
 	job.reason = outcome.reason;
 	job.endedAt = Date.now();
 	closeSync(job.outputFd);
+	clearInterval(job.overrun);
 	if (shuttingDown) return;
 	onChange();
 	// A stopped job was stopped by the model, which already has job_stop's answer.
 	if (job.status === "stopped") return;
+	send(notification(job), notificationForYou(job));
+}
+
+const send = (content: string, lines: string[]): void => {
 	api.sendMessage(
-		{
-			customType: "pi-background",
-			content: notification(job),
-			details: { lines: notificationForYou(job) },
-			display: true,
-		},
+		{ customType: "pi-background", content, details: { lines }, display: true },
 		{ deliverAs: "followUp", triggerTurn: true },
 	);
-}
+};
 
 export async function stop(id: string): Promise<Job | undefined> {
 	const job = jobs.get(id);
@@ -170,13 +182,12 @@ export function elapsed(job: Job): string {
 	return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
 }
 
-export const timeoutText = (job: Job): string =>
-	job.timeoutSeconds === null ? "none" : `${job.timeoutSeconds}s`;
+export const expectedText = (job: Job): string =>
+	job.expectedSeconds === null ? "none" : `${job.expectedSeconds}s`;
 
 const OUTCOME: Record<Exclude<JobStatus, "running">, string> = {
 	done: "finished",
 	failed: "failed",
-	timeout: "timed out",
 	stopped: "stopped",
 };
 
@@ -185,9 +196,9 @@ const noun = (job: Job): string => (job.kind === "command" ? "Command" : "Agent"
 /** The result of run_command, run_agent and resume_agent. */
 export function started(job: Job): string {
 	const lines = [
-		job.timeoutSeconds === null
-			? `${noun(job)} ${job.title} is started in the background. It has no time limit; you will be notified if it stops.`
-			: `${noun(job)} ${job.title} is started in the background, you will be notified when it finishes.`,
+		job.expectedSeconds === null
+			? `${noun(job)} ${job.title} is started in the background. You will be notified if it stops.`
+			: `${noun(job)} ${job.title} is started in the background, you will be notified when it finishes, and again if it is still running after ${job.expectedSeconds}s.`,
 		`job id: ${job.id}`,
 	];
 	if (job.kind === "command") lines.push(`The command output is piped to: ${outputPath(job)}`);
@@ -216,7 +227,7 @@ function entry(job: Job): string {
 	const lines = [job.id, `title: ${job.title}`];
 	if (job.kind === "command") lines.push(`output path: ${outputPath(job)}`);
 	if (job.sandboxId) lines.push(`sandbox: ${job.sandboxId}`);
-	lines.push(`elapsed: ${elapsed(job)}`, `timeout: ${timeoutText(job)}`);
+	lines.push(`elapsed: ${elapsed(job)}`, `expected: ${expectedText(job)}`);
 	return lines.join("\n");
 }
 
@@ -256,6 +267,22 @@ export function notification(job: Job): string {
 	return `<pi-background>\n${lines.join("\n")}\n</pi-background>`;
 }
 
+/** Sent at each multiple of expectedSeconds while the job is still going. */
+export function overrun(job: Job): string {
+	return [
+		"<pi-background>",
+		`${noun(job)} ${job.title} is still running after ${elapsed(job)}, longer than the ${job.expectedSeconds}s you expected.`,
+		`job id: ${job.id}`,
+		"It has not been stopped. Leave it running, or stop it with job_stop.",
+		"</pi-background>",
+	].join("\n");
+}
+
+/** The same, for a person. */
+export const overrunForYou = (job: Job): string[] => [
+	`${noun(job)} ${job.title} still running after ${elapsed(job)}, expected ${job.expectedSeconds}s.`,
+];
+
 /** The same completion, for a person: no id, no paths. */
 export function notificationForYou(job: Job): string[] {
 	const status = job.status as Exclude<JobStatus, "running">;
@@ -269,7 +296,7 @@ export function notificationForYou(job: Job): string[] {
 	return lines;
 }
 
-const HEADINGS = ["job id", "type", "title", "elapsed", "timeout"];
+const HEADINGS = ["job id", "type", "title", "elapsed", "expected"];
 /** The last two columns hold durations, which read wrong ragged. */
 const RIGHT = [false, false, false, true, true];
 
@@ -285,7 +312,7 @@ export function table(): string[] {
 		j.kind === "command" ? "command" : "agent",
 		j.title,
 		elapsed(j),
-		timeoutText(j),
+		expectedText(j),
 	]);
 	const width = HEADINGS.map((h, i) =>
 		Math.max(h.length, ...cells.map((row) => (row[i] as string).length)),

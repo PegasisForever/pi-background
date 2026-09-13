@@ -20,6 +20,7 @@ Every section below states both views.
 | Tool call header | never | the tool's name and the job's title |
 | Tool results | in full | a short line the tool wrote for you alone |
 | Job completion notifications | in full | a short line, under a `[pi-background]` label |
+| Job overrun notifications | in full | a short line, under a `[pi-background]` label |
 | The nudge | in full | the same text, as a user message |
 | The nudge classifier's prompt | never | never |
 | The job counter under the editor | never | always, when a job is running |
@@ -39,17 +40,20 @@ Every turn, for as long as the tool is registered.
 
 #### `run_command`
 
-> Start a shell command in the background and return immediately. Give timeoutSeconds a number for work you are waiting on: the result is delivered to you automatically when it ends, so end your turn rather than polling or sleeping. Give it null for a service that runs until stopped; you are told if it stops on its own. It returns a job id, which job_list and job_stop take.
+> Start a shell command in the background and return immediately. Give expectedSeconds a number for work you are waiting on: the result is delivered to you automatically when it ends, so end your turn rather than polling or sleeping. Give it null for a service that runs until stopped; you are told if it stops on its own. Nothing is ever killed by the clock — only job_stop ends a job early. It returns a job id, which job_list and job_stop take.
 
 | Parameter | Description |
 |---|---|
 | `command` | Shell command |
 | `title` | Short title for this job, shown in the job list |
 | `cwd` | Working directory |
-| `timeoutSeconds` | Seconds to wait, as pi's bash tool counts them. Pass null for a service such as a dev server: it has no time limit and runs until stopped. |
+| `expectedSeconds` | Roughly how long you expect this to take, in seconds. Nothing is killed at that mark: if the command is still running you are told so, and you decide whether to let it continue. Pass null for a service such as a dev server, which you are not waiting on. |
 
-`command`, `title` and `timeoutSeconds` are required. `title` is required because it is the only
+`command`, `title` and `expectedSeconds` are required. `title` is required because it is the only
 thing you ever see: the command itself never reaches your screen.
+
+**`expectedSeconds` is not a deadline.** Nothing in this extension kills a job on a clock. See
+section C for what happens when a job passes it.
 
 #### `run_agent`
 
@@ -67,7 +71,7 @@ The value in the test config reads:
 |---|---|
 | `task` | The complete instruction for the subagent |
 | `title` | Short title for this job, shown in the job list |
-| `timeoutSeconds` | Seconds to wait before giving up, as pi's bash tool counts them |
+| `expectedSeconds` | Roughly how long you expect this to take, in seconds. Nothing is killed at that mark: if it is still running you are told so, and you decide whether to let it continue. |
 | `cwd` | Working directory |
 | `isolation` | isolated runs in a fresh sandbox — **this row exists only when `isolated` is configured**; with no provider the parameter is not registered at all |
 
@@ -82,7 +86,7 @@ Registered with `run_agent`.
 | `jobId` | Job id of the finished subagent to continue |
 | `task` | The follow-up instruction for the subagent |
 | `title` | Short title for this job, shown in the job list |
-| `timeoutSeconds` | Seconds to wait before giving up, as pi's bash tool counts them |
+| `expectedSeconds` | Roughly how long you expect this to take, in seconds. Nothing is killed at that mark: if it is still running you are told so, and you decide whether to let it continue. |
 
 This is a separate tool rather than a `resumeFrom` parameter on `run_agent` so that two whole
 classes of error cannot happen: a resume can no longer be given a `cwd` or an `isolation` that
@@ -90,7 +94,7 @@ contradicts the job it is continuing.
 
 #### `job_list`
 
-> Every job this session still has running, grouped by kind, with elapsed time and timeout. A finished job is not listed: it reported itself when it ended.
+> Every job this session still has running, grouped by kind, with elapsed time and the duration you expected. A finished job is not listed: it reported itself when it ended.
 
 No parameters.
 
@@ -167,10 +171,10 @@ has a sandbox, because `run_command` has no `isolation` parameter.
 
 ```
 run_command long sleeper
-Timeout: none
+Expected: none
 ```
 
-`Timeout:` is the number of seconds, or `none` for a service. No id, no path, no command.
+`Expected:` is the number of seconds, or `none` for a service. No id, no path, no command.
 
 #### Errors
 
@@ -197,13 +201,13 @@ There is no output path and no result path. The raw output of an agent job is pi
 stream, which is of no use to the model; the path to its answer arrives with the completion
 message, once the answer exists.
 
-`timeoutSeconds` is a required number, so an agent job is always awaited.
+`expectedSeconds` is a required number, so an agent job is always awaited.
 
 #### What you see
 
 ```
 run_agent greeter
-Timeout: 120s
+Expected: 120s
 ```
 
 #### Errors
@@ -237,7 +241,7 @@ job id: 01a0997c-9319-7639-87ae-48b4998f00b1
 
 ```
 resume_agent greeter follow-up
-Timeout: 120s
+Expected: 120s
 ```
 
 #### Errors
@@ -263,20 +267,20 @@ already reported itself when it ended.
 title: long sleeper
 output path: /home/rmng/.pi/agent/jobs/01a09979-cbb7-7639-87ae-48ae2d46581d/output
 elapsed: 0s
-timeout: none
+expected: none
 
 01a09979-cbb8-7639-87ae-48b1389afa99
 title: quick failure
 output path: /home/rmng/.pi/agent/jobs/01a09979-cbb8-7639-87ae-48b1389afa99/output
 elapsed: 0s
-timeout: 60s
+expected: 60s
 
 1 in progress agent:
 
 01a09979-cbb9-7639-87ae-48b3100fbdd1
 title: greeter
 elapsed: 0s
-timeout: 120s
+expected: 120s
 ```
 
 A group with no jobs is omitted. A header goes singular at one job. An agent entry carries no
@@ -294,7 +298,7 @@ Exactly what `/jobs` prints — the running jobs as a table:
 
 ```
 job_list
-job id                                type     title                elapsed  timeout
+job id                                type     title                elapsed  expected
 01a09a13-04cf-73d2-88ce-082fbf7c871f  command  long sleeper              2s     none
 01a09a13-04d2-73d2-88ce-0831f03dcabb  command  build the docs site       1s     600s
 01a09a13-04d2-73d2-88ce-08326fada276  agent    greeter                   1s     300s
@@ -325,7 +329,7 @@ elapsed: 42s
 output path: /home/rmng/.pi/agent/jobs/01a09979-cbb7-7639-87ae-48ae2d46581d/output
 ```
 
-The word after the colon is one of `finished`, `failed`, `timed out` or `stopped`.
+The word after the colon is one of `finished`, `failed` or `stopped`.
 
 **A job ended by job_stop sends no completion message.** The model already has this answer, so a
 second delivery would only cost it a turn.
@@ -346,17 +350,19 @@ One line. The job is gone from the counter under the editor, which is the rest o
 
 ### Outcome words, elapsed and exit code
 
-A job that has ended is one of four things. The same four words are used everywhere:
+A job that has ended is one of three things. The same three words are used everywhere:
 
 | Word | Meaning |
 |---|---|
 | `finished` | ended successfully |
 | `failed` | ended unsuccessfully |
-| `timed out` | `timeoutSeconds` elapsed |
 | `stopped` | `job_stop` ended it |
 
-An abort outranks whatever the underlying process reported, so a stopped or timed-out job says
-`stopped` or `timed out` rather than repeating the operating system's phrasing for a kill.
+There is no `timed out`, because nothing in this extension ends a job on a clock. Passing
+`expectedSeconds` produces a message, not an outcome.
+
+An abort outranks whatever the underlying process reported, so a stopped job says `stopped` rather
+than repeating the operating system's phrasing for a kill.
 
 `exit code` is the command's exit status, or `none` when it was killed and had none. It is
 reported for commands only.
@@ -448,6 +454,36 @@ Agent greeter finished in 5s.
 The subagent's answer is not shown to you. In practice you learn what it said one turn later, when
 the model reads that file and tells you.
 
+### A job that has overrun
+
+Sent when an awaited job passes `expectedSeconds` and is still running. A service never sends one.
+The job is **not** stopped: this is a fact handed to the model, not an action taken on its behalf.
+
+#### What the model sees
+
+```
+<pi-background>
+Command underestimated job is still running after 10s, longer than the 10s you expected.
+job id: 01a09a37-1a83-72e4-99d5-2b05b3d9e3bc
+It has not been stopped. Leave it running, or stop it with job_stop.
+</pi-background>
+```
+
+`Command` is `Agent` for a subagent. The message names both options and recommends neither: the
+extension cannot tell a stuck build from a large one, and the model started the job.
+
+It repeats at every multiple of `expectedSeconds` — `2x`, `3x`, `4x` — **except** that a repeat is
+skipped when one was sent less than five minutes ago. So `expectedSeconds: 1` on a job that runs an
+hour sends one message at one second and then one every five minutes, not 3,600 of them.
+
+#### What you see
+
+```
+[pi-background]
+
+Command underestimated job still running after 10s, expected 10s.
+```
+
 ### The nudge
 
 Sent as an ordinary user message, as if you had typed it. At most **five** per user turn; the
@@ -527,13 +563,13 @@ It writes a session entry of a custom type that pi keeps out of the model's cont
 row per running job, under a dimmed heading:
 
 ```
-job id                                type     title                elapsed  timeout
+job id                                type     title                elapsed  expected
 01a09a13-04cf-73d2-88ce-082fbf7c871f  command  long sleeper             15s     none
 01a09a13-04d2-73d2-88ce-0831f03dcabb  command  build the docs site      15s     600s
 ```
 
-Five columns: `job id`, `type` (`command` or `agent`), `title`, `elapsed`, `timeout`. Every column
-is sized to its widest cell; the two durations are right-aligned. `timeout` is `none` for a
+Five columns: `job id`, `type` (`command` or `agent`), `title`, `elapsed`, `expected`. Every column
+is sized to its widest cell; the two durations are right-aligned. `expected` is `none` for a
 service.
 
 No status column, because everything listed is running. No sandbox id: it is in `job_list`'s

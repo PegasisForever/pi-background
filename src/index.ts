@@ -97,9 +97,11 @@ const assistantText = (content: readonly { type: string }[]): string =>
 		.join("");
 
 const TitleParam = Type.String({ description: "Short title for this job, shown in the job list" });
-const TimeoutParam = Type.Number({
+const ExpectedParam = Type.Number({
 	minimum: 1,
-	description: "Seconds to wait before giving up, as pi's bash tool counts them",
+	description:
+		"Roughly how long you expect this to take, in seconds. Nothing is killed at that mark: " +
+		"if it is still running you are told so, and you decide whether to let it continue.",
 });
 
 /** What a tool tells the TUI and never tells the model. */
@@ -239,7 +241,7 @@ export default function (pi: ExtensionAPI) {
 	/** Both readers are served from one job: text for the model, lines for the TUI. */
 	const answer = (job: jobs.Job) => ({
 		content: [{ type: "text" as const, text: jobs.started(job) }],
-		details: { lines: [`Timeout: ${jobs.timeoutText(job)}`] },
+		details: { lines: [`Expected: ${jobs.expectedText(job)}`] },
 	});
 
 	function registerTools(): void {
@@ -248,17 +250,18 @@ export default function (pi: ExtensionAPI) {
 			name: "run_command",
 			label: "Run command",
 			description:
-				"Start a shell command in the background and return immediately. Give timeoutSeconds a " +
+				"Start a shell command in the background and return immediately. Give expectedSeconds a " +
 				"number for work you are waiting on: the result is delivered to you automatically when it " +
 				"ends, so end your turn rather than polling or sleeping. Give it null for a service that " +
-				"runs until stopped; you are told if it stops on its own. It returns a job id, which " +
-				"job_list and job_stop take.",
+				"runs until stopped; you are told if it stops on its own. Nothing is ever killed by the " +
+				"clock — only job_stop ends a job early. It returns a job id, which job_list and job_stop " +
+				"take.",
 			parameters: RunCommandParams,
 			async execute(_id, params, _signal, _onUpdate, toolCtx) {
 				const cwd = params.cwd ?? toolCtx.cwd;
 				return answer(
 					jobs.start(
-						{ kind: "command", title: params.title, cwd, timeoutSeconds: params.timeoutSeconds },
+						{ kind: "command", title: params.title, cwd, expectedSeconds: params.expectedSeconds },
 						(j) => runCommand(j, params.command, cwd),
 					),
 				);
@@ -271,7 +274,7 @@ export default function (pi: ExtensionAPI) {
 			const RunAgentParams = Type.Object({
 				task: Type.String({ description: "The complete instruction for the subagent" }),
 				title: TitleParam,
-				timeoutSeconds: TimeoutParam,
+				expectedSeconds: ExpectedParam,
 				cwd: Type.Optional(Type.String({ description: "Working directory" })),
 				// Offered only when a sandbox provider is configured, so there is nothing to refuse.
 				...(isolated
@@ -310,7 +313,7 @@ export default function (pi: ExtensionAPI) {
 								kind: "agent",
 								title: params.title,
 								cwd,
-								timeoutSeconds: params.timeoutSeconds,
+								expectedSeconds: params.expectedSeconds,
 								sandboxId: sandbox?.id,
 								ssh: sandbox?.ssh,
 							},
@@ -354,7 +357,7 @@ export default function (pi: ExtensionAPI) {
 								kind: "agent",
 								title: params.title,
 								cwd: previous.cwd,
-								timeoutSeconds: params.timeoutSeconds,
+								expectedSeconds: params.expectedSeconds,
 								sandboxId: previous.sandboxId,
 								ssh: previous.ssh,
 								sessionOf: previous.sessionOf,
@@ -380,8 +383,8 @@ export default function (pi: ExtensionAPI) {
 			name: "job_list",
 			label: "List jobs",
 			description:
-				"Every job this session still has running, grouped by kind, with elapsed time and " +
-				"timeout. A finished job is not listed: it reported itself when it ended.",
+				"Every job this session still has running, grouped by kind, with elapsed time and the " +
+				"duration you expected. A finished job is not listed: it reported itself when it ended.",
 			parameters: NoParams,
 			async execute() {
 				return {
@@ -458,10 +461,11 @@ const RunCommandParams = Type.Object({
 	command: Type.String({ description: "Shell command" }),
 	title: TitleParam,
 	cwd: Type.Optional(Type.String({ description: "Working directory" })),
-	timeoutSeconds: Type.Union([Type.Number({ minimum: 1 }), Type.Null()], {
+	expectedSeconds: Type.Union([Type.Number({ minimum: 1 }), Type.Null()], {
 		description:
-			"Seconds to wait, as pi's bash tool counts them. Pass null for a service such as a dev " +
-			"server: it has no time limit and runs until stopped.",
+			"Roughly how long you expect this to take, in seconds. Nothing is killed at that mark: " +
+			"if the command is still running you are told so, and you decide whether to let it " +
+			"continue. Pass null for a service such as a dev server, which you are not waiting on.",
 	}),
 });
 
@@ -469,7 +473,7 @@ const ResumeAgentParams = Type.Object({
 	jobId: Type.String({ description: "Job id of the finished subagent to continue" }),
 	task: Type.String({ description: "The follow-up instruction for the subagent" }),
 	title: TitleParam,
-	timeoutSeconds: TimeoutParam,
+	expectedSeconds: ExpectedParam,
 });
 
 const NoParams = Type.Object({});

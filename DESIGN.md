@@ -64,23 +64,32 @@ A **job** is work the parent started that finishes later.
 job
 ├── id        uuidv7
 ├── title     the model's own name for it, required
-├── timeout   seconds, or null for a service (an agent may not be null)
-├── status    running | done | failed | timeout | stopped
+├── expected  seconds you expect it to take, or null for a service (an agent may not be null)
+├── status    running | done | failed | stopped
 ├── exitCode  a command's exit status, or null when it was killed
 ├── reason    set when it says more than the status and the code do
 └── dir       ~/.pi/agent/jobs/<id>/
 ```
 
-`timeoutSeconds` is **required on every call** and counted the way pi's own `bash` tool counts it.
-A number means **awaited work**. `null` means a **service** — a dev server, a watcher, a tail —
-which has no deadline. There is no default, so the caller states which it is rather than getting
-one by omission.
+`expectedSeconds` is **required on every call**. A number means **awaited work**. `null` means a
+**service** — a dev server, a watcher, a tail — which is not waited on. There is no default, so the
+caller states which it is rather than getting one by omission.
 
 An agent always finishes, so `run_agent` and `resume_agent` do not accept `null`.
 
+**Nothing is ever killed by the clock.** `expectedSeconds` is an estimate, not a deadline: when it
+elapses the job keeps running and the model is told it overran (§6). Only `job_stop` and
+`session_shutdown` end a job early, which is why `status` has no `timeout` value and every job
+carries one signal.
+
+This is the correction of a real cost. As a deadline, an estimate that came in low killed work that
+was going fine, and the model has no good way to estimate in the first place. As a check-in, a low
+estimate costs one message. The failure mode moved from lost work to a little noise.
+
 A service is still reported when it ends (§6): a crashed dev server that says nothing is a hole,
-not a feature. What `null` decides is §8: a service does not make the session active and does not
-silence a nudge, because a process that is supposed to run for hours must not do either.
+not a feature. What `null` decides is §8 and the overrun clock: a service does not make the session
+active, does not silence a nudge, and is never reported for running long, because a process that is
+supposed to run for hours must not do any of those.
 
 `title` is required rather than derived. It is the only thing the human ever sees of a job (§2.1),
 so there has to be one, and a model that knows why it started a job writes a better line than the
@@ -92,10 +101,10 @@ first 120 characters of a shell command. The command itself stays in the tool ca
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| `run_command` | `command`, `title`, `timeoutSeconds` (number or null), `cwd?` | id and output path |
-| `run_agent` | `task`, `title`, `timeoutSeconds` (number), `cwd?`, `isolation?` when configured | id, and sandbox id when isolated |
-| `resume_agent` | `jobId`, `task`, `title`, `timeoutSeconds` (number) | id, and sandbox id when the original had one |
-| `job_list` | — | the running jobs, grouped by kind: id, title, elapsed, timeout, output path for a command, sandbox id when isolated |
+| `run_command` | `command`, `title`, `expectedSeconds` (number or null), `cwd?` | id and output path |
+| `run_agent` | `task`, `title`, `expectedSeconds` (number), `cwd?`, `isolation?` when configured | id, and sandbox id when isolated |
+| `resume_agent` | `jobId`, `task`, `title`, `expectedSeconds` (number) | id, and sandbox id when the original had one |
+| `job_list` | — | the running jobs, grouped by kind: id, title, elapsed, expected, output path for a command, sandbox id when isolated |
 | `job_stop` | `id` | the job's final state |
 
 Five tools, five tight schemas. The three start tools call the same internal `start()`; what is
@@ -132,7 +141,7 @@ and only `content` reaches the provider; `renderCall` and `renderResult` draw fr
 
 | Surface | The model | You |
 |---|---|---|
-| Starting a job | prose, the id, the output path | `run_command deploy staging` and `Timeout: 60s` |
+| Starting a job | prose, the id, the output path | `run_command deploy staging` and `Expected: 60s` |
 | `job_list` | grouped records with ids and paths | the `/jobs` table |
 | `job_stop` | final state, elapsed, path | the tool line alone; the counter is the rest of the answer |
 | A completion | the tagged record and the path | one sentence, and the exit code for a command |
@@ -144,11 +153,11 @@ when nothing is:
 2 commands, 1 subagent
 ```
 
-`/jobs` lists them as a table, as a durable entry: `job id`, `type`, `title`, `elapsed`, `timeout`,
+`/jobs` lists them as a table, as a durable entry: `job id`, `type`, `title`, `elapsed`, `expected`,
 each column sized to its widest cell, durations right-aligned, the heading dimmed.
 
 ```
-job id                                type     title             elapsed  timeout
+job id                                type     title             elapsed  expected
 01a09a13-04cf-73d2-88ce-082fbf7c871f  command  deploy staging       3m58s     600s
 01a09a13-04d2-73d2-88ce-0831f03dcabb  agent    auth diff review     1h10m    7200s
 ```
@@ -351,25 +360,23 @@ process. It is safe because shutdown has already awaited every job.
 This is not only tidiness: an extension that leaves a live child or an unreferenced handle behind
 hangs `pi -p` forever, after `session_shutdown` has already fired.
 
-### §5.2 Stopping and timeout are one mechanism
+### §5.2 One way to end a job
 
-Every job carries one `AbortSignal`:
+`job_stop` is the only thing that ends a job early, so a job carries one `AbortSignal` and it comes
+from one `AbortController`. There is no deadline signal to compose with it, and no state to read
+afterwards to work out which of two things fired.
 
 ```js
 const stop = new AbortController();
-const signal = timeoutSeconds === null
-  ? stop.signal
-  : AbortSignal.any([stop.signal, AbortSignal.timeout(timeoutSeconds * 1000)]);
+const signal = stop.signal;
 ```
 
-`job_stop` aborts `stop` and waits for the job to settle, so it reports the final state rather
-than `running`. A timeout aborts through `AbortSignal.timeout`, which is Node's — this extension
-runs no timers. Which one fired is read from `stop.signal.aborted`, so the status is `stopped` or
-`timeout` with no extra state.
+`job_stop` aborts it and waits for the job to settle, so it reports the final state rather than
+`running`.
 
 **The abort outranks whatever the runner reported.** A killed process says whatever its runtime
 says — `aborted` from pi's shell backend, `The operation was aborted` from Node's `spawn`. Both
-mean the same thing and neither is the answer, so `finalise` takes the status from the signals and
+mean the same thing and neither is the answer, so `finalise` takes the status from the signal and
 discards the runner's version. Without that, the same stop reads differently depending on which
 kind of job it was, and both readings are noise.
 
@@ -377,17 +384,36 @@ A command job passes the signal to `exec`, which kills the process tree. An agen
 `spawn`, which kills the child; for an isolated job that closes the `ssh` connection and the
 remote pi exits on stdin EOF.
 
-An awaited job always carries a timeout, and a service that runs forever is doing its job, so
-there is no idle watchdog.
+### §5.2a The overrun clock
+
+An awaited job gets one `setInterval` at `expectedSeconds`, cleared in `finalise`. It fires at
+every multiple — `1x`, `2x`, `3x` — and each firing sends the overrun message of §6 unless one was
+sent less than five minutes ago.
+
+This extension used to run no timers of its own, which was worth saying while a deadline could be
+expressed as `AbortSignal.timeout`. A repeating check-in cannot be, so there is now one timer per
+awaited job and one `clearInterval` that must stay next to the code that closes the output file.
+
+**The five minutes is a floor on noise, not a schedule.** `expectedSeconds: 1` on a job that runs
+an hour would otherwise send 3,600 messages and wake the agent for every one. With the floor it
+sends one at 1s and then one every five minutes. A service has no interval at all, so a dev server
+is never reported for running long — which is the whole of what it does.
+
+The interval keeps firing while suppressed rather than being rescheduled. A timer callback that
+compares two numbers costs nothing, and the alternative is arithmetic over multiples that has to
+stay correct across a suppressed window.
 
 ### §5.3 One finalise
 
-One function sets the job's `status`, `exitCode` and `reason`, sends the notification, and
-refreshes the activity file. There is no second place that decides whether a job succeeded.
+One function sets the job's `status`, `exitCode` and `reason`, closes the output file, clears the
+overrun interval, sends the notification, and refreshes the activity file. There is no second place
+that decides whether a job succeeded, and no second place that can leave a timer running.
 
 ---
 
 ## §6. Notification
+
+Two kinds of message, one mechanism:
 
 ```js
 pi.sendMessage(
@@ -396,10 +422,12 @@ pi.sendMessage(
 )
 ```
 
-**A job notifies when it ends, unless `job_stop` is what ended it.** That is the whole rule. No
-exit code is inspected, and the timeout plays no part.
+### §6.1 A job ended
 
-A service is included. It has no deadline, but it can still crash, and a dev server that dies in
+**A job notifies when it ends, unless `job_stop` is what ended it.** That is the whole rule. No
+exit code is inspected.
+
+A service is included. It is not waited on, but it can still crash, and a dev server that dies in
 silence is discovered by something else failing an hour later. The exception is the other
 direction: a job the model stopped itself has already been answered by `job_stop`, so delivering
 it again would wake the agent for a turn to be told what it just did.
@@ -407,6 +435,19 @@ it again would wake the agent for a turn to be told what it just did.
 The message carries the outcome word, the elapsed time, the title, the id, a command's exit code,
 and the path to read. `details` carries your half — one sentence, no id, no path — rendered by
 `registerMessageRenderer` (§2.1).
+
+### §6.2 A job overran
+
+**An awaited job that passes `expectedSeconds` says so, and keeps running.** The message states the
+elapsed time, what was expected, the id, and that the job has not been stopped. It names both
+options — leave it, or `job_stop` it — and recommends neither.
+
+That last part is the point. The extension does not know whether a build taking four times its
+estimate is stuck or merely large. The model started the job, knows what it is, and can read the
+output file; the decision is its own, and the message exists to hand it the fact it could not
+otherwise have.
+
+Repeats are on §5.2a's interval, floored at five minutes.
 
 **There is no delivery-failure handling, because there is no delivery failure to catch.**
 `pi.sendMessage` returns `void` and its implementation is
@@ -435,7 +476,7 @@ pi will not continue on its own. `agent_end` fires again on every retry and is t
 ```
 1. five nudges already this turn     -> skip
 2. the run ended in error or abort   -> skip
-3. an awaited job is running         -> skip; the job will wake it
+3. an awaited job is running         -> skip; the job will wake it, running or overrunning
 4. classify the last assistant text  -> nudge or skip
 ```
 
@@ -637,7 +678,7 @@ Only the ones whose reason is not obvious from the design.
 | Steering a running subagent | it is what `--mode json` costs, and stop is enough |
 | Answering a child's question | in json mode a child cannot block on one |
 | Jobs outliving the pi process | needs a process-liveness consensus protocol |
-| An idle watchdog | an awaited job already carries a timeout |
+| An idle watchdog | an overrunning job already reports itself, and the model can read its output |
 | Notification batching | add it when the log shows the cost |
 | Undelivered-failure recovery | pi catches delivery failures itself and reports them as `extension_error` |
 | A fan-out or breadth cap | see §12 |
@@ -663,7 +704,8 @@ Written down so that when one bites, the real shape is handled rather than the i
    record of a job that ended is its completion message and nothing else. If that message is
    compacted away, the id and the output path are gone with it, and the files on disk are all
    that is left.
-3. **An agent job whose child hangs without output runs to its timeout.** No idle detection.
+3. **A job that hangs runs until something stops it.** Nothing ends a job on a clock. A wedged
+   child reports that it has overrun, every five minutes, until the model or you act on it.
 4. **A subagent cannot ask anything.** An extension inside it that would open a dialog gets an
    immediate empty answer and proceeds without that input.
 5. **Depth bounds the height of the tree, not its size.** `maxDepth: 3` with three children at each
