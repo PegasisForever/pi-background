@@ -181,7 +181,7 @@ export default function (pi: ExtensionAPI) {
 	 * extension's own name, so `pi-powerline-footer` can lift it into a segment of its own.
 	 */
 	function refreshStatus(ctx: ExtensionContext): void {
-		const live = jobs.running();
+		const live = jobs.backgrounded();
 		const commands = live.filter((j) => j.kind === "command").length;
 		const agents = live.length - commands;
 		const parts = [
@@ -260,7 +260,7 @@ export default function (pi: ExtensionAPI) {
 	);
 
 	pi.registerCommand("jobs", {
-		description: "List running jobs (shown to you only, never sent to the model)",
+		description: "List background jobs (shown to you only, never sent to the model)",
 		handler: async () => {
 			pi.appendEntry<Shown>(`${jobs.NAME}-listing`, { lines: jobs.table(), heading: true });
 		},
@@ -410,7 +410,7 @@ export default function (pi: ExtensionAPI) {
 				if (previous.status === "running") {
 					throw new Error(`job ${previous.id} is still running; stop it or wait for it`);
 				}
-				if (jobs.running().some((j) => j.sessionOf === previous.sessionOf)) {
+				if (jobs.backgrounded().some((j) => j.sessionOf === previous.sessionOf)) {
 					throw new Error(`another job is already continuing ${previous.id}`);
 				}
 				return answer(
@@ -444,8 +444,9 @@ export default function (pi: ExtensionAPI) {
 			name: "job_list",
 			label: "List jobs",
 			description:
-				"Every job this session still has running, grouped by kind, with elapsed time and the " +
-				"duration you expected. A finished job is not listed: it reported itself when it ended.",
+				"Every job this session has running in the background, grouped by kind, with elapsed " +
+				"time and the duration you expected. A finished job is not listed: it reported itself " +
+				"when it ended.",
 			parameters: NoParams,
 			async execute() {
 				return {

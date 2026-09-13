@@ -121,7 +121,7 @@ naming the key. It is not a shrug, and it is not a session that quietly runs on 
 | `bash` | run a shell command; under 3 minutes it waits, longer it backgrounds; `expectedSeconds: null` for a service |
 | `run_agent` | start a subagent, locally or in a sandbox |
 | `resume_agent` | continue a finished subagent with a follow-up task |
-| `job_list` | what is still running |
+| `job_list` | what is still running in the background |
 | `job_stop` | stop one by id |
 
 All five exist in every session. `run_agent` refuses when the session has no subagent depth left,
@@ -147,11 +147,16 @@ Exit code: 0
 The model gets the output itself, then the exit code, as sentences — and the path only when
 something was cut.
 
-A count in pi's footer while anything is running:
+A count in pi's footer while anything is running in the background:
 
 ```
 2 commands, 1 subagent
 ```
+
+A command you are waiting for is never counted, in the footer or in `/jobs` or in `job_list`.
+Otherwise every `ls` would put `1 command` in the footer for the length of an `ls`. A command
+appears the moment it outlives the wait and moves to the background, which is the moment it is
+worth telling you about.
 
 It is written with `setStatus`, under the key `pi-background`. If you use
 [pi-powerline-footer](https://www.npmjs.com/package/pi-powerline-footer), you can give it a

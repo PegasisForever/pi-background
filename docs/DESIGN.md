@@ -205,6 +205,15 @@ nothing is; `/jobs` lists them as a table, as a durable entry, each column sized
 cell, durations right-aligned, the heading dimmed. Both are transcribed in
 `docs/MODEL-FACING-TEXT.md` §E.
 
+**A command the model is still waiting for is in no listing.** The footer, `/jobs` and `job_list`
+all read `backgrounded()`, which is every running job with the foreground flag off, so the rule is
+stated once and no listing can be given a different one by accident. A job the model is holding the
+call for is not news to either reader: the model cannot ask, because asking would need the call it
+is holding, and you are already watching the tool call it came from. Counting it only meant that an
+`ls` put a `1 command` in the footer for the length of an `ls` and took it away again. `detach`
+clears the flag, so a command joins every listing at the moment it outlives the wait — the moment
+it becomes something you did not already know.
+
 **The status key is `pi-background`**, the extension's own name, so `pi-powerline-footer` can lift
 it out of its overflow row into a segment of its own with a `customItems` entry naming that key.
 

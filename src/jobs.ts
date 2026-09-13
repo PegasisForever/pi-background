@@ -90,9 +90,19 @@ export function init(pi: ExtensionAPI, activityRefresh: () => void): void {
 
 const list = (): Job[] => [...jobs.values()];
 export const get = (id: string): Job | undefined => jobs.get(id);
-export const running = (): Job[] => list().filter((j) => j.status === "running");
+/**
+ * Every job a reader is told about: the footer, `/jobs` and `job_list` all draw from this one list,
+ * so no listing can be given a different rule by accident.
+ *
+ * A command the model is still waiting for is left out. It is running, but every reader already
+ * knows about it — the model is holding the call, and you are watching the tool call it came from —
+ * and a command that takes a second would otherwise put a count in your footer for that second and
+ * take it away again. `detach` clears the flag, so a command appears at the moment it outlives the
+ * wait, which is the moment it becomes news.
+ */
+export const backgrounded = (): Job[] => list().filter((j) => j.status === "running" && !j.foreground);
 /** A service is not waited on, so it must not hold the session busy or silence a nudge. */
-export const activeCount = (): number => running().filter((j) => j.expectedSeconds !== null).length;
+export const activeCount = (): number => backgrounded().filter((j) => j.expectedSeconds !== null).length;
 
 const outputPath = (job: Job): string => join(job.dir, "output");
 const resultPath = (job: Job): string => join(job.dir, "result");
@@ -229,7 +239,7 @@ export async function stop(job: Job): Promise<void> {
 
 export async function shutdown(): Promise<void> {
 	shuttingDown = true;
-	const live = running();
+	const live = backgrounded();
 	for (const job of live) job.stop.abort();
 	await Promise.all(live.map((j) => j.settled));
 	jobs.clear();
@@ -295,7 +305,7 @@ export function handedOff(job: Job, overran: boolean): string {
 
 /** The result of job_list: running jobs only, grouped by kind. */
 export function listing(): string {
-	const live = running();
+	const live = backgrounded();
 	if (live.length === 0) return "No jobs are running.";
 	const groups: string[] = [];
 	for (const [kind, label] of [
@@ -426,8 +436,8 @@ const RIGHT = [false, false, false, true, true];
  * The first row is the heading; an empty table is one line and no heading.
  */
 export function table(): string[] {
-	const live = running();
-	if (live.length === 0) return ["No jobs running."];
+	const live = backgrounded();
+	if (live.length === 0) return ["No background jobs."];
 	const cells = live.map((j) => [j.id, j.kind, j.title, elapsed(j), expectedText(j)]);
 	const width = HEADINGS.map((h, i) =>
 		Math.max(h.length, ...cells.map((row) => (row[i] as string).length)),

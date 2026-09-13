@@ -97,7 +97,7 @@ Registered with `run_agent`.
 
 #### `job_list`
 
-> Every job this session still has running, grouped by kind, with elapsed time and the duration you expected. A finished job is not listed: it reported itself when it ended.
+> Every job this session has running in the background, grouped by kind, with elapsed time and the duration you expected. A finished job is not listed: it reported itself when it ended.
 
 No parameters.
 
@@ -407,7 +407,7 @@ No jobs are running.
 
 #### What you see
 
-Exactly what `/jobs` prints — the running jobs as a table:
+Exactly what `/jobs` prints — the background jobs as a table:
 
 ```
 job_list
@@ -695,10 +695,10 @@ session entry and is never saved.
 
 `/jobs` is described in pi's command list as:
 
-> List running jobs (shown to you only, never sent to the model)
+> List background jobs (shown to you only, never sent to the model)
 
 It writes a session entry of a custom type that pi keeps out of the model's context by design. One
-row per running job, under a dimmed heading:
+row per background job, under a dimmed heading:
 
 ```
 job id                                type     title                elapsed  expected
@@ -716,7 +716,7 @@ model-facing rows, not here. This is the same table `job_list` shows you.
 When nothing is running, the whole entry is one line and there is no heading:
 
 ```
-No jobs running.
+No background jobs.
 ```
 
 ### Configuration and startup errors
