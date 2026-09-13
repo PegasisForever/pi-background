@@ -1,24 +1,22 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-	CONFIG_DIR_NAME,
-	getAgentDir,
-	getShellConfig,
-	ModelRuntime,
-	Theme,
-} from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, Spacer, Text } from "@earendil-works/pi-tui";
-import type { Component } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { CONFIG_DIR_NAME, getAgentDir, getShellConfig, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Static } from "typebox";
+import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { parseSandbox, runAgent } from "./agent-job.ts";
 import type { Sandbox } from "./agent-job.ts";
+import { parseSandbox, runAgent } from "./agent-job.ts";
 import { runCommand } from "./command-job.ts";
 import * as jobs from "./jobs.ts";
+import { log } from "./log.ts";
+import { block, header, labelled, type Shown, shown } from "./shown.ts";
 
-const STATE_DIR = join(getAgentDir(), "state");
+/**
+ * Read on every call, never cached, so `PI_CODING_AGENT_DIR` is honoured wherever it is set.
+ * The same rule holds for the jobs directory in `jobs.ts`.
+ */
+const stateDir = (): string => join(getAgentDir(), "state");
 const CONFIG_NAME = "pi-background.json";
 /** Caps reasoning plus output, so it must survive the model's thinking. */
 const CLASSIFIER_MAX_TOKENS = 2048;
@@ -51,10 +49,20 @@ const ConfigSchema = Type.Object(
 				{ additionalProperties: false },
 			),
 		),
+		logFile: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+		debug: Type.Optional(Type.Boolean()),
 	},
 	{ additionalProperties: false },
 );
-type Config = Static<typeof ConfigSchema>;
+type Raw = Static<typeof ConfigSchema>;
+
+/** The settings, with every default already filled in, so nothing downstream repeats them. */
+interface Config extends Raw {
+	logFile: string;
+	debug: boolean;
+}
+
+const defaultLogFile = (): string => join(getAgentDir(), "pi-background.log");
 
 function readConfig(cwd: string): Config {
 	const merged: Record<string, unknown> = {};
@@ -68,24 +76,56 @@ function readConfig(cwd: string): Config {
 			throw err;
 		}
 		sources.push(path);
-		Object.assign(merged, JSON.parse(raw) as Record<string, unknown>);
+		Object.assign(merged, parse(path, raw));
 	}
-	if (!Value.Check(ConfigSchema, merged)) {
-		const problems = [...Value.Errors(ConfigSchema, merged)]
-			.map((e) => `${e.instancePath || "/"} ${e.message}`)
-			.join("; ");
-		throw new Error(`${sources.join(" + ")}: ${problems}`);
-	}
+	const wrong = problem(merged);
+	if (wrong !== undefined) throw new Error(`${sources.join(" + ")}: ${wrong}`);
 	if ((merged.nudgeModel === undefined) !== (merged.nudgeThinking === undefined)) {
 		throw new Error(`${CONFIG_NAME}: nudgeModel and nudgeThinking must be set together`);
 	}
-	return merged;
+	const raw = merged as Raw;
+	return {
+		...raw,
+		logFile: typeof raw.logFile === "string" ? raw.logFile : defaultLogFile(),
+		debug: raw.debug ?? false,
+	};
+}
+
+/**
+ * What is wrong with a config file, in one sentence, or undefined when nothing is (C7). A schema
+ * checker on its own says "must not have additional properties" and never names the key, which is
+ * the one thing you need to fix a typo, so the unknown key is found here instead.
+ */
+function problem(value: Record<string, unknown>): string | undefined {
+	const allowed = Object.keys(ConfigSchema.properties);
+	const unknown = Object.keys(value).find((key) => !allowed.includes(key));
+	if (unknown !== undefined) return `unknown key "${unknown}". The keys are ${allowed.join(", ")}.`;
+	const error = [...Value.Errors(ConfigSchema, value)][0];
+	if (error === undefined) return undefined;
+	const path = error.instancePath.split("/").filter((step) => step !== "");
+	if (path.length === 0) return error.message;
+	let at: unknown = value;
+	for (const step of path) at = (at as Record<string, unknown> | undefined)?.[step];
+	return `"${path.join(".")}" is ${JSON.stringify(at)}, which that key does not take.`;
+}
+
+function parse(path: string, text: string): Record<string, unknown> {
+	try {
+		return JSON.parse(text) as Record<string, unknown>;
+	} catch (error) {
+		throw new Error(
+			`${path} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
 }
 
 /** Field 22 of /proc/self/stat, after the comm field's closing parenthesis. */
 function procStart(): string {
 	const stat = readFileSync("/proc/self/stat", "utf8");
-	const field = stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/)[19];
+	const field = stat
+		.slice(stat.lastIndexOf(")") + 1)
+		.trim()
+		.split(/\s+/)[19];
 	if (!field) throw new Error("pi-background: could not read starttime from /proc/self/stat");
 	return field;
 }
@@ -104,46 +144,21 @@ const ExpectedParam = Type.Number({
 		"if it is still running you are told so, and you decide whether to let it continue.",
 });
 
-/** What a tool tells the TUI and never tells the model. */
-interface Shown {
-	lines: string[];
-	/** The first line is a table heading, so it is dimmed rather than read as data. */
-	heading?: boolean;
-}
-
-const fill = (box: Box, theme: Theme, colour: "customMessageText" | "toolOutput", shown: Shown) => {
-	shown.lines.forEach((line, i) =>
-		box.addChild(new Text(theme.fg(shown.heading && i === 0 ? "muted" : colour, line), 0, 0)),
-	);
-	return box;
-};
-
-/** A block of our own: pi does not wrap a custom renderer, so it pads and tints itself. */
-const block = (theme: Theme, shown: Shown): Component =>
-	fill(new Box(1, 1, (t: string) => theme.bg("customMessageBg", t)), theme, "customMessageText", shown);
-
-/** Lines inside pi's tool shell, which already pads. A second Box would indent them again. */
-const rows = (theme: Theme, shown: Shown): Component =>
-	fill(new Box(0, 0), theme, "toolOutput", shown);
-
-const header = (theme: Theme, name: string, title?: string): Component =>
-	new Text(theme.fg("toolTitle", theme.bold(name)) + (title ? ` ${title}` : ""), 0, 0);
-
-const shown = (result: { details?: Shown }, theme: Theme): Component =>
-	rows(theme, result.details ?? { lines: [] });
-
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag("jobs-depth", { type: "string", description: "Internal: remaining subagent depth" });
 
-	let config: Config = {};
+	let config: Config = { logFile: defaultLogFile(), debug: false };
 	let depthRemaining = 1;
 	let isChild = false;
 	let nudgesThisTurn = 0;
 	let runtime: ModelRuntime | undefined;
-	const statePath = join(STATE_DIR, `${process.pid}.json`);
+	const statePath = join(stateDir(), `${process.pid}.json`);
 	const started = procStart();
 
-	/** Human-only: a count under the editor, and a durable listing from /jobs. */
+	/**
+	 * Human-only: a count in pi's footer, and a durable listing from /jobs. The key is the
+	 * extension's own name, so `pi-powerline-footer` can lift it into a segment of its own.
+	 */
 	function refreshStatus(ctx: ExtensionContext): void {
 		const live = jobs.running();
 		const commands = live.filter((j) => j.kind === "command").length;
@@ -152,9 +167,7 @@ export default function (pi: ExtensionAPI) {
 			commands > 0 ? `${commands} command${commands > 1 ? "s" : ""}` : undefined,
 			agents > 0 ? `${agents} subagent${agents > 1 ? "s" : ""}` : undefined,
 		].filter((p) => p !== undefined);
-		ctx.ui.setWidget("pi-background", parts.length ? [parts.join(", ")] : undefined, {
-			placement: "belowEditor",
-		});
+		ctx.ui.setStatus(jobs.NAME, parts.length ? parts.join(", ") : undefined);
 	}
 
 	function refreshActivity(ctx: ExtensionContext): void {
@@ -206,7 +219,7 @@ export default function (pi: ExtensionAPI) {
 		if (nudgesThisTurn >= MAX_NUDGES_PER_TURN || jobs.activeCount() > 0) return;
 		const leaf = ctx.sessionManager.getLeafEntry();
 		const msg = leaf?.type === "message" ? leaf.message : undefined;
-		if (!msg || msg.role !== "assistant") return;
+		if (msg?.role !== "assistant") return;
 		if (msg.stopReason === "error" || msg.stopReason === "aborted") return;
 		const text = assistantText(msg.content).trim();
 		if (!text) return;
@@ -214,27 +227,22 @@ export default function (pi: ExtensionAPI) {
 		const action = await classify(text);
 		if (action === "") return;
 		nudgesThisTurn += 1;
+		log(config, "nudge", { action, nth: nudgesThisTurn });
 		pi.sendUserMessage(`You said you would ${action}, but did not. Continue.`);
 	}
 
-	pi.registerEntryRenderer<Shown>("pi-background-listing", (entry, _options, theme) =>
+	pi.registerEntryRenderer<Shown>(`${jobs.NAME}-listing`, (entry, _options, theme) =>
 		block(theme, entry.data ?? { lines: [] }),
 	);
 
-	pi.registerMessageRenderer<Shown>("pi-background", (message, _options, theme) => {
-		const box = new Box(1, 1, (t: string) => theme.bg("customMessageBg", t));
-		box.addChild(new Text(theme.fg("customMessageLabel", theme.bold("[pi-background]")), 0, 0));
-		box.addChild(new Spacer(1));
-		for (const line of message.details?.lines ?? []) {
-			box.addChild(new Text(theme.fg("customMessageText", line), 0, 0));
-		}
-		return box;
-	});
+	pi.registerMessageRenderer<Shown>(jobs.NAME, (message, _options, theme) =>
+		labelled(theme, jobs.NAME, message.details?.lines ?? []),
+	);
 
 	pi.registerCommand("jobs", {
 		description: "List running jobs (shown to you only, never sent to the model)",
 		handler: async () => {
-			pi.appendEntry<Shown>("pi-background-listing", { lines: jobs.table(), heading: true });
+			pi.appendEntry<Shown>(`${jobs.NAME}-listing`, { lines: jobs.table(), heading: true });
 		},
 	});
 
@@ -430,8 +438,7 @@ export default function (pi: ExtensionAPI) {
 					details: { lines: [] },
 				};
 			},
-			renderCall: (params, theme) =>
-				header(theme, "job_stop", jobs.get(params.id)?.title ?? params.id),
+			renderCall: (params, theme) => header(theme, "job_stop", jobs.get(params.id)?.title ?? params.id),
 			renderResult: (result, _options, theme) => shown(result, theme),
 		});
 	}
@@ -443,19 +450,25 @@ export default function (pi: ExtensionAPI) {
 		if (isChild) {
 			depthRemaining = Number(flag);
 			if (!Number.isInteger(depthRemaining) || depthRemaining < 0) {
-				throw new Error(`pi-background: --jobs-depth must be a whole number, got "${flag as string}"`);
+				throw new Error(
+					`pi-background: --jobs-depth must be a whole number, got "${flag as string}"`,
+				);
 			}
 		} else {
 			depthRemaining = config.maxDepth ?? 1;
 		}
-		mkdirSync(STATE_DIR, { recursive: true });
-		jobs.init(pi, () => refreshActivity(ctx));
+		mkdirSync(stateDir(), { recursive: true });
+		jobs.init(
+			pi,
+			() => refreshActivity(ctx),
+			(event, data) => log(config, event, data),
+		);
 		registerTools();
 		refreshActivity(ctx);
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
-		ctx.ui.setWidget("pi-background", undefined);
+		ctx.ui.setStatus(jobs.NAME, undefined);
 		await jobs.shutdown();
 		rmSync(statePath);
 	});

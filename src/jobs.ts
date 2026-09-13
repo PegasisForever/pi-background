@@ -1,8 +1,8 @@
 import { appendFileSync, closeSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { uuidv7 } from "@earendil-works/pi-ai";
-import { getAgentDir, truncateTail } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, truncateTail } from "@earendil-works/pi-coding-agent";
 
 export type JobKind = "command" | "agent";
 export type JobStatus = "running" | "done" | "failed" | "stopped";
@@ -51,16 +51,30 @@ export interface Outcome {
 	reason?: string;
 }
 
-const JOBS_ROOT = join(getAgentDir(), "jobs");
+/** The extension's own name: the tag on every injected message, and the name in every path. */
+export const NAME = "pi-background";
+
+/**
+ * Read on every call, never cached, so `PI_CODING_AGENT_DIR` is honoured wherever it is set.
+ * The same rule holds for the state directory in `index.ts`.
+ */
+const jobsRoot = (): string => join(getAgentDir(), "jobs");
 
 const jobs = new Map<string, Job>();
 let api: ExtensionAPI;
 let onChange: () => void;
+/** Set by `init`, because the log file is a config key and the config lives in `index.ts`. */
+let record: (event: string, data: Record<string, unknown>) => void = () => undefined;
 let shuttingDown = false;
 
-export function init(pi: ExtensionAPI, activityRefresh: () => void): void {
+export function init(
+	pi: ExtensionAPI,
+	activityRefresh: () => void,
+	logger: (event: string, data: Record<string, unknown>) => void,
+): void {
 	api = pi;
 	onChange = activityRefresh;
+	record = logger;
 	// pi caches the extension module across /new, /resume and /fork, so this is not fresh.
 	shuttingDown = false;
 }
@@ -69,8 +83,7 @@ export const list = (): Job[] => [...jobs.values()];
 export const get = (id: string): Job | undefined => jobs.get(id);
 export const running = (): Job[] => list().filter((j) => j.status === "running");
 /** A service is not waited on, so it must not hold the session busy or silence a nudge. */
-export const activeCount = (): number =>
-	running().filter((j) => j.expectedSeconds !== null).length;
+export const activeCount = (): number => running().filter((j) => j.expectedSeconds !== null).length;
 
 export const outputPath = (job: Job): string => join(job.dir, "output");
 export const resultPath = (job: Job): string => join(job.dir, "result");
@@ -90,7 +103,7 @@ export interface StartOptions {
 /** Creates the job and its runner together, so a job can never exist untracked. */
 export function start(options: StartOptions, run: (job: Job) => Promise<Outcome>): Job {
 	const id = uuidv7();
-	const dir = join(JOBS_ROOT, id);
+	const dir = join(jobsRoot(), id);
 	mkdirSync(dir, { recursive: true });
 	const stop = new AbortController();
 	const { promise, resolve } = Promise.withResolvers<void>();
@@ -114,6 +127,13 @@ export function start(options: StartOptions, run: (job: Job) => Promise<Outcome>
 		foreground: options.foreground ?? false,
 	};
 	jobs.set(id, job);
+	record("start", {
+		job: id,
+		kind: job.kind,
+		title: job.title,
+		expected: job.expectedSeconds,
+		foreground: job.foreground,
+	});
 	// A foreground job's clock starts when the wait ends, because that report is the first overrun.
 	if (options.expectedSeconds !== null && !job.foreground) {
 		job.overrun = setInterval(() => reportOverrun(job), options.expectedSeconds * 1000);
@@ -159,6 +179,7 @@ export function waitInForeground(job: Job, seconds: number, signal?: AbortSignal
 /** The wait is over and the command is still running: it carries on without a waiter. */
 export function detach(job: Job, seconds: number, overran: boolean): void {
 	job.foreground = false;
+	record("detach", { job: job.id, overran, elapsed: elapsed(job) });
 	// An overrun was just reported to the model, so the five-minute floor starts from here.
 	if (overran) job.overrunAt = Date.now();
 	job.overrun = setInterval(() => reportOverrun(job), seconds * 1000);
@@ -174,6 +195,7 @@ function reportOverrun(job: Job): void {
 	if (shuttingDown || job.status !== "running") return;
 	if (job.overrunAt !== undefined && now - job.overrunAt < QUIET_MS) return;
 	job.overrunAt = now;
+	record("overrun", { job: job.id, elapsed: elapsed(job), expected: job.expectedSeconds });
 	send(overrun(job), overrunForYou(job));
 }
 
@@ -186,6 +208,14 @@ function finalise(job: Job, outcome: Outcome): void {
 	job.endedAt = Date.now();
 	closeSync(job.outputFd);
 	clearInterval(job.overrun);
+	record("end", {
+		job: job.id,
+		kind: job.kind,
+		status: job.status,
+		exitCode: job.exitCode ?? null,
+		reason: job.reason ?? null,
+		elapsed: elapsed(job),
+	});
 	if (shuttingDown) return;
 	onChange();
 	// The model already has the answer: job_stop returned it, or a foreground wait did.
@@ -203,6 +233,7 @@ const send = (content: string, lines: string[]): void => {
 export async function stop(id: string): Promise<Job | undefined> {
 	const job = jobs.get(id);
 	if (job?.status === "running") {
+		record("stop", { job: job.id, elapsed: elapsed(job) });
 		job.stop.abort();
 		await job.settled;
 	}
@@ -240,19 +271,23 @@ export function started(job: Job): string {
 	const lines = [
 		job.expectedSeconds === null
 			? `${noun(job)} ${job.title} is started in the background. You will be notified if it stops.`
-			: `${noun(job)} ${job.title} is started in the background, you will be notified when it finishes, and again if it is still running after ${job.expectedSeconds}s.`,
-		`job id: ${job.id}`,
+			: `${noun(job)} ${job.title} is started in the background. You will be notified when it finishes, and again if it is still running after ${job.expectedSeconds}s.`,
+		`Its job id is ${job.id}.`,
 	];
-	if (job.kind === "command") lines.push(`The command output is piped to: ${outputPath(job)}`);
-	if (job.sandboxId) lines.push(`sandbox: ${job.sandboxId}`);
+	if (job.kind === "command") lines.push(`Its output is collected at ${outputPath(job)}.`);
+	if (job.sandboxId) lines.push(`It is running in sandbox ${job.sandboxId}.`);
 	return lines.join("\n");
 }
 
 /** The result of a command that ended while the model waited. It sends no message afterwards. */
 export function finished(job: Job): string {
-	const lines = [tail(job) || "(no output)", "", `exit code: ${job.exitCode ?? "none"}`];
-	if (job.reason) lines.push(`exit reason: ${job.reason}`);
-	lines.push(`elapsed: ${elapsed(job)}`, `The whole output is at: ${outputPath(job)}`);
+	const lines = [
+		tail(job) || "(no output)",
+		"",
+		`The command exited with code ${job.exitCode ?? "none"} after ${elapsed(job)}.`,
+	];
+	if (job.reason) lines.push(`It ended because ${job.reason}.`);
+	lines.push(`The whole output is at ${outputPath(job)}.`);
 	return lines.join("\n");
 }
 
@@ -265,8 +300,8 @@ export function handedOff(job: Job, overran: boolean): string {
 			? `Command ${job.title} is still running after ${elapsed(job)}, longer than the ${job.expectedSeconds}s you expected.`
 			: `Command ${job.title} is still running after ${elapsed(job)}; you stopped waiting for it.`,
 		"It has not been stopped and is now in the background.",
-		`job id: ${job.id}`,
-		`The whole output is collected at: ${outputPath(job)}`,
+		`Its job id is ${job.id}.`,
+		`Its whole output is collected at ${outputPath(job)}.`,
 		"You will be notified when it ends.",
 	);
 	return lines.join("\n");
@@ -275,7 +310,7 @@ export function handedOff(job: Job, overran: boolean): string {
 /** The result of job_list: running jobs only, grouped by kind. */
 export function listing(): string {
 	const live = running();
-	if (live.length === 0) return "no jobs running";
+	if (live.length === 0) return "No jobs are running.";
 	const groups: string[] = [];
 	for (const [kind, label] of [
 		["command", "background command"],
@@ -283,17 +318,22 @@ export function listing(): string {
 	] as const) {
 		const of = live.filter((j) => j.kind === kind);
 		if (of.length === 0) continue;
-		const header = `${of.length} in progress ${label}${of.length > 1 ? "s" : ""}:`;
+		const header =
+			of.length > 1 ? `${of.length} ${label}s are in progress:` : `One ${label} is in progress:`;
 		groups.push([header, ...of.map(entry)].join("\n\n"));
 	}
 	return groups.join("\n\n");
 }
 
 function entry(job: Job): string {
-	const lines = [job.id, `title: ${job.title}`];
-	if (job.kind === "command") lines.push(`output path: ${outputPath(job)}`);
-	if (job.sandboxId) lines.push(`sandbox: ${job.sandboxId}`);
-	lines.push(`elapsed: ${elapsed(job)}`, `expected: ${expectedText(job)}`);
+	const lines = [
+		job.expectedSeconds === null
+			? `${noun(job)} ${job.title} has been running for ${elapsed(job)}, with no estimate.`
+			: `${noun(job)} ${job.title} has been running for ${elapsed(job)}, against the ${job.expectedSeconds}s you expected.`,
+		`Its job id is ${job.id}.`,
+	];
+	if (job.kind === "command") lines.push(`Its output is collected at ${outputPath(job)}.`);
+	if (job.sandboxId) lines.push(`It is running in sandbox ${job.sandboxId}.`);
 	return lines.join("\n");
 }
 
@@ -301,14 +341,13 @@ function entry(job: Job): string {
 export function stopped(job: Job, wasRunning: boolean): string {
 	const lines = [
 		wasRunning
-			? `Job ${job.title} is stopped.`
-			: `Job ${job.title} had already ended: ${OUTCOME[job.status as Exclude<JobStatus, "running">]}.`,
-		`elapsed: ${elapsed(job)}`,
+			? `Job ${job.title} is stopped after ${elapsed(job)}.`
+			: `Job ${job.title} had already ${OUTCOME[job.status as Exclude<JobStatus, "running">]} after ${elapsed(job)}.`,
 	];
 	lines.push(
 		job.kind === "command"
-			? `output path: ${outputPath(job)}`
-			: `response path: ${resultPath(job)}`,
+			? `Its output is at ${outputPath(job)}.`
+			: `Its response is at ${resultPath(job)}.`,
 	);
 	return lines.join("\n");
 }
@@ -318,30 +357,28 @@ export function notification(job: Job): string {
 	const status = job.status as Exclude<JobStatus, "running">;
 	const lines = [
 		job.kind === "command"
-			? `Background command ${job.title} ${OUTCOME[status]}.`
-			: `Agent ${job.title} ${OUTCOME[status]}.`,
-		`job id: ${job.id}`,
-		`elapsed: ${elapsed(job)}`,
+			? `Background command ${job.title} ${OUTCOME[status]} after ${elapsed(job)}, with exit code ${job.exitCode ?? "none"}.`
+			: `Agent ${job.title} ${OUTCOME[status]} after ${elapsed(job)}.`,
 	];
-	if (job.kind === "command") lines.push(`exit code: ${job.exitCode ?? "none"}`);
-	if (job.reason) lines.push(`exit reason: ${job.reason}`);
+	if (job.reason) lines.push(`It ended because ${job.reason}.`);
+	lines.push(`Its job id is ${job.id}.`);
 	if (job.kind === "command") {
-		lines.push("", "the last of its output:", tail(job) || "(no output)", "");
-		lines.push(`read the whole output at: ${outputPath(job)}`);
+		lines.push("", "The last of its output:", "", tail(job) || "(no output)", "");
+		lines.push(`Read the whole output at ${outputPath(job)}.`);
 	} else if (size(resultPath(job)) > 0) {
-		lines.push("", `read the agent response at: ${resultPath(job)}`);
+		lines.push("", `Read the agent's response at ${resultPath(job)}.`);
 	}
-	return `<pi-background>\n${lines.join("\n")}\n</pi-background>`;
+	return `<${NAME}>\n${lines.join("\n")}\n</${NAME}>`;
 }
 
 /** Sent at each multiple of expectedSeconds while the job is still going. */
 export function overrun(job: Job): string {
 	return [
-		"<pi-background>",
+		`<${NAME}>`,
 		`${noun(job)} ${job.title} is still running after ${elapsed(job)}, longer than the ${job.expectedSeconds}s you expected.`,
-		`job id: ${job.id}`,
 		"It has not been stopped. Leave it running, or stop it with job_stop.",
-		"</pi-background>",
+		`Its job id is ${job.id}.`,
+		`</${NAME}>`,
 	].join("\n");
 }
 

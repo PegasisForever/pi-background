@@ -4,8 +4,9 @@ A [pi](https://github.com/badlogic/pi-mono) extension that gives an agent four t
 that moves a slow command into the background instead of killing it, subagents, a prod when it
 stops mid-promise, and a file an external supervisor can read to tell whether the session is busy.
 
-Built for one person on one machine. Linux only, pi 0.85.1, no Windows path handling and no
-Node version detection. See the constitution at the top of [DESIGN.md](DESIGN.md) for why it is
+Built for one person on one machine, and published as is: no support, and no promise that
+anything stays the same. Linux only, pi 0.85.1, no Windows path handling and no Node version
+detection. See the constitution at the top of [docs/DESIGN.md](docs/DESIGN.md) for why it is
 allowed to be that narrow.
 
 ## What it does
@@ -92,7 +93,11 @@ Two optional files, shallow-merged, project over user:
   "isolated": {
     "create": "my-sandbox-create",
     "instructions": "Work happens in /home/me/work. The sandbox stays up after the job ends; run `my-sandbox-destroy <sandbox id>` when you are done with it."
-  }
+  },
+
+  // The log. null or absent means ~/.pi/agent/pi-background.log.
+  "logFile": null,
+  "debug": false
 }
 ```
 
@@ -136,10 +141,25 @@ Finished in 0s.
 Exit code: 0
 ```
 
-A count under the input box while anything is running:
+The model gets the same last lines, then the exit code and the path, as sentences.
+
+A count in pi's footer while anything is running:
 
 ```
 2 commands, 1 subagent
+```
+
+It is written with `setStatus`, under the key `pi-background`. If you use
+[pi-powerline-footer](https://www.npmjs.com/package/pi-powerline-footer), you can give it a
+segment of its own instead of leaving it in the overflow row:
+
+```jsonc
+"powerline": {
+  "customItems": [
+    { "id": "jobs", "statusKey": "pi-background", "position": "right",
+      "hideWhenMissing": true, "excludeFromExtensionStatuses": true }
+  ]
+}
 ```
 
 And `/jobs`, which is yours alone and never reaches the model:
@@ -158,16 +178,16 @@ provider, so your half costs no tokens.
 
 | File | What it is |
 |---|---|
-| [DESIGN.md](DESIGN.md) | the design, and the constitution it answers to |
-| [MODEL-FACING-TEXT.md](MODEL-FACING-TEXT.md) | every string, transcribed: what the model reads, what you read |
-| [FEATURES.md](FEATURES.md) | the menu this was picked from, frozen as a record |
+| [docs/DESIGN.md](docs/DESIGN.md) | the design, and the constitution it answers to |
+| [docs/MODEL-FACING-TEXT.md](docs/MODEL-FACING-TEXT.md) | every string, transcribed: what the model reads, what you read |
+| [docs/FEATURES.md](docs/FEATURES.md) | the menu this was picked from, frozen as a record |
 
-`MODEL-FACING-TEXT.md` exists so the boundary between the two readers can be audited without
+`docs/MODEL-FACING-TEXT.md` exists so the boundary between the two readers can be audited without
 reading the code. If a string changes and that file does not, one of them is wrong.
 
 ## Limits
 
-Written down in full in §12 of DESIGN.md. The ones worth knowing before you start:
+Written down in full in §12 of docs/DESIGN.md. The ones worth knowing before you start:
 
 - A sandbox is never reclaimed by this extension. If the agent forgets the destroy command, they
   accumulate.
@@ -181,3 +201,7 @@ Written down in full in §12 of DESIGN.md. The ones worth knowing before you sta
 - Every command leaves a directory under `~/.pi/agent/jobs/`, `ls` included, and nothing removes
   them.
 - A command that buffers its output hands off with nothing to show but the path.
+
+## Licence
+
+MIT.

@@ -8,8 +8,12 @@
 > `run_command` became `bash`, replacing pi's own shell tool and waiting for a short command
 > instead of always returning at once.
 >
-> For what the extension does now, read `DESIGN.md`. For every string it emits, read
-> `MODEL-FACING-TEXT.md`. Neither of those is a record of how the design was reached; this is.
+> The wording changed too: the model's half of every string is now written in sentences, and the
+> job count moved from a widget of its own into pi's footer.
+>
+> For what the extension does now, read `docs/DESIGN.md`. For every string it emits, read
+> `docs/MODEL-FACING-TEXT.md`. Neither of those is a record of how the design was reached; this
+> is.
 
 One pi extension for: subagents, background commands, completion nudge, activity signal.
 Internal use only. Linux only. Inside RMNG clones.

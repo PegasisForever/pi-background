@@ -24,7 +24,7 @@ Every section below states both views.
 | Job overrun notifications | in full | a short line, under a `[pi-background]` label |
 | The nudge | in full | the same text, as a user message |
 | The nudge classifier's prompt | never | never |
-| The job counter under the editor | never | always, when a job is running |
+| The job count in pi's footer | never | always, when a job is running |
 | The `/jobs` listing | never | when you run `/jobs` |
 | Configuration and startup errors | never | when they happen |
 
@@ -159,20 +159,19 @@ bytes of the output file, whichever is shorter, or `(no output)` when the comman
 ```
 <the end of the output>
 
-exit code: <exit code>
-elapsed: <elapsed>
-The whole output is at: <agent dir>/jobs/<job id>/output
+The command exited with code <exit code> after <elapsed>.
+The whole output is at <agent dir>/jobs/<job id>/output.
 ```
 
-An `exit reason:` line is added after `exit code:` when the runner reported one. Concretely:
+An `It ended because …` line is added after the exit sentence when the runner reported a
+reason. Concretely:
 
 ```
 alpha
 omega
 
-exit code: 0
-elapsed: 2s
-The whole output is at: /home/rmng/.pi/agent/jobs/01a09a6d-3b96-75bb-9ed6-8ec15ab85763/output
+The command exited with code 0 after 2s.
+The whole output is at /home/rmng/.pi/agent/jobs/01a09a6d-3b96-75bb-9ed6-8ec15ab85763/output.
 ```
 
 No job id: the command is over, so `job_list` will not list it and `job_stop` has nothing to stop.
@@ -188,8 +187,8 @@ the same end-of-output, and is left out entirely when there is none.
 
 Command <title> is still running after <elapsed>, longer than the <expectedSeconds>s you expected.
 It has not been stopped and is now in the background.
-job id: <job id>
-The whole output is collected at: <agent dir>/jobs/<job id>/output
+Its job id is <job id>.
+Its whole output is collected at <agent dir>/jobs/<job id>/output.
 You will be notified when it ends.
 ```
 
@@ -209,8 +208,8 @@ tick-4
 
 Command tick loop is still running after 4s, longer than the 4s you expected.
 It has not been stopped and is now in the background.
-job id: 01a09a6a-d8b4-740c-83ef-91218d51df7a
-The whole output is collected at: /home/rmng/.pi/agent/jobs/01a09a6a-d8b4-740c-83ef-91218d51df7a/output
+Its job id is 01a09a6a-d8b4-740c-83ef-91218d51df7a.
+Its whole output is collected at /home/rmng/.pi/agent/jobs/01a09a6a-d8b4-740c-83ef-91218d51df7a/output.
 You will be notified when it ends.
 ```
 
@@ -219,9 +218,9 @@ You will be notified when it ends.
 `expectedSeconds` of 180 or more, or `null`. The model never waited, so there is no output yet.
 
 ```
-Command <title> is started in the background, you will be notified when it finishes, and again if it is still running after <expectedSeconds>s.
-job id: <job id>
-The command output is piped to: <agent dir>/jobs/<job id>/output
+Command <title> is started in the background. You will be notified when it finishes, and again if it is still running after <expectedSeconds>s.
+Its job id is <job id>.
+Its output is collected at <agent dir>/jobs/<job id>/output.
 ```
 
 The first line differs for a service, which is not waited on at all:
@@ -273,21 +272,21 @@ Expected: none
 #### Errors
 
 None the model can cause. `bash` validates nothing beyond the schema pi enforces for it. A command
-that exits non-zero is reported through its `exit code:`, not as an error from this call.
+that exits non-zero is reported through its exit sentence, not as an error from this call.
 
 ### `run_agent`
 
 #### What the model sees
 
 ```
-Agent <title> is started in the background, you will be notified when it finishes.
-job id: <job id>
+Agent <title> is started in the background. You will be notified when it finishes, and again if it is still running after <expectedSeconds>s.
+Its job id is <job id>.
 ```
 
 An isolated subagent adds a third line:
 
 ```
-sandbox: <sandbox id>
+It is running in sandbox <sandbox id>.
 ```
 
 There is no output path and no result path. The raw output of an agent job is pi's JSON event
@@ -322,12 +321,12 @@ for example `Unexpected token o in JSON at position 1`.
 
 #### What the model sees
 
-The same three lines as `run_agent`, with a **new** job id. The `sandbox:` line is present when
-the job being continued had one, since a resume stays on the same host.
+The same lines as `run_agent`, with a **new** job id. The sandbox line is present when the job
+being continued had one, since a resume stays on the same host.
 
 ```
-Agent greeter follow-up is started in the background, you will be notified when it finishes.
-job id: 01a0997c-9319-7639-87ae-48b4998f00b1
+Agent greeter follow-up is started in the background. You will be notified when it finishes, and again if it is still running after 120s.
+Its job id is 01a0997c-9319-7639-87ae-48b4998f00b1.
 ```
 
 #### What you see
@@ -354,35 +353,30 @@ Running jobs only, grouped by kind, with a count in each header. A finished job 
 already reported itself when it ended.
 
 ```
-2 in progress background commands:
+2 background commands are in progress:
 
-01a09979-cbb7-7639-87ae-48ae2d46581d
-title: long sleeper
-output path: /home/rmng/.pi/agent/jobs/01a09979-cbb7-7639-87ae-48ae2d46581d/output
-elapsed: 0s
-expected: none
+Command long sleeper has been running for 0s, with no estimate.
+Its job id is 01a09979-cbb7-7639-87ae-48ae2d46581d.
+Its output is collected at /home/rmng/.pi/agent/jobs/01a09979-cbb7-7639-87ae-48ae2d46581d/output.
 
-01a09979-cbb8-7639-87ae-48b1389afa99
-title: quick failure
-output path: /home/rmng/.pi/agent/jobs/01a09979-cbb8-7639-87ae-48b1389afa99/output
-elapsed: 0s
-expected: 60s
+Command quick failure has been running for 0s, against the 60s you expected.
+Its job id is 01a09979-cbb8-7639-87ae-48b1389afa99.
+Its output is collected at /home/rmng/.pi/agent/jobs/01a09979-cbb8-7639-87ae-48b1389afa99/output.
 
-1 in progress agent:
+One agent is in progress:
 
-01a09979-cbb9-7639-87ae-48b3100fbdd1
-title: greeter
-elapsed: 0s
-expected: 120s
+Agent greeter has been running for 0s, against the 120s you expected.
+Its job id is 01a09979-cbb9-7639-87ae-48b3100fbdd1.
 ```
 
 A group with no jobs is omitted. A header goes singular at one job. An agent entry carries no
-output path, for the reason given under `run_agent`, and carries `sandbox: <id>` when it has one.
+output path, for the reason given under `run_agent`, and carries a sandbox sentence when it has
+one.
 
 When nothing is running:
 
 ```
-no jobs running
+No jobs are running.
 ```
 
 #### What you see
@@ -406,23 +400,21 @@ None.
 #### What the model sees
 
 ```
-Job <title> is stopped.
-elapsed: <duration>
-output path: <agent dir>/jobs/<job id>/output
+Job <title> is stopped after <duration>.
+Its output is at <agent dir>/jobs/<job id>/output.
 ```
 
-The third line is `response path: <agent dir>/jobs/<job id>/result` for a subagent, since the raw
-output of an agent job is a JSON event stream.
+The second line is `Its response is at <agent dir>/jobs/<job id>/result.` for a subagent, since
+the raw output of an agent job is a JSON event stream.
 
 Stopping a job that has already ended is not an error. The first line says so instead:
 
 ```
-Job long sleeper had already ended: stopped.
-elapsed: 42s
-output path: /home/rmng/.pi/agent/jobs/01a09979-cbb7-7639-87ae-48ae2d46581d/output
+Job long sleeper had already stopped after 42s.
+Its output is at /home/rmng/.pi/agent/jobs/01a09979-cbb7-7639-87ae-48ae2d46581d/output.
 ```
 
-The word after the colon is one of `finished`, `failed` or `stopped`.
+The word before `after` is one of `finished`, `failed` or `stopped`.
 
 **A job ended by job_stop sends no completion message.** The model already has this answer, so a
 second delivery would only cost it a turn.
@@ -433,7 +425,7 @@ second delivery would only cost it a turn.
 job_stop long sleeper
 ```
 
-One line. The job is gone from the counter under the editor, which is the rest of the answer.
+One line. The job is gone from the footer count, which is the rest of the answer.
 
 #### Errors
 
@@ -488,23 +480,22 @@ it wakes the agent for a new turn. Wrapped in tags:
 
 ```
 <pi-background>
-Background command quick failure failed.
-job id: 01a09979-cbb8-7639-87ae-48b1389afa99
-elapsed: 3s
-exit code: 7
+Background command quick failure failed after 3s, with exit code 7.
+Its job id is 01a09979-cbb8-7639-87ae-48b1389afa99.
 
-the last of its output:
+The last of its output:
+
 Traceback (most recent call last):
   File "build.py", line 12
 ValueError: no such target
 
-read the whole output at: /home/rmng/.pi/agent/jobs/01a09979-cbb8-7639-87ae-48b1389afa99/output
+Read the whole output at /home/rmng/.pi/agent/jobs/01a09979-cbb8-7639-87ae-48b1389afa99/output.
 </pi-background>
 ```
 
-An `exit reason:` line sits between `exit code:` and the blank line when there is one. The body
-under `the last of its output:` is the last 10 lines or 1000 bytes of the output file, whichever is
-shorter, and reads `(no output)` when the command printed nothing.
+An `It ended because …` line sits between the first sentence and the job id when the runner
+reported a reason. The body under `The last of its output:` is the last 10 lines or 1000 bytes of
+the output file, whichever is shorter, and reads `(no output)` when the command printed nothing.
 
 The message carries **no instruction**. The "end your turn rather than polling" wording exists
 only in the tool description in A.
@@ -535,18 +526,17 @@ Sent on the same mechanism, with the same type and tags.
 
 ```
 <pi-background>
-Agent greeter finished.
-job id: 01a09979-cbb9-7639-87ae-48b3100fbdd1
-elapsed: 5s
+Agent greeter finished after 5s.
+Its job id is 01a09979-cbb9-7639-87ae-48b3100fbdd1.
 
-read the agent response at: /home/rmng/.pi/agent/jobs/01a09979-cbb9-7639-87ae-48b3100fbdd1/result
+Read the agent's response at /home/rmng/.pi/agent/jobs/01a09979-cbb9-7639-87ae-48b3100fbdd1/result.
 </pi-background>
 ```
 
-There is no exit code: for a subagent the outcome word carries the whole answer. An `exit reason:`
-line appears when it failed.
+There is no exit code: for a subagent the outcome word carries the whole answer. An
+`It ended because …` line appears when it failed.
 
-The `read the agent response at:` line is present **only when that file is not empty**. A killed
+The `Read the agent's response at …` line is present **only when that file is not empty**. A killed
 or crashed subagent often wrote nothing, and pointing the model at an empty file wastes a read.
 The file holds the subagent's final assistant message as plain text. The message does not quote
 it: the model must read the file.
@@ -574,8 +564,8 @@ The job is **not** stopped: this is a fact handed to the model, not an action ta
 ```
 <pi-background>
 Command underestimated job is still running after 10s, longer than the 10s you expected.
-job id: 01a09a37-1a83-72e4-99d5-2b05b3d9e3bc
 It has not been stopped. Leave it running, or stop it with job_stop.
+Its job id is 01a09a37-1a83-72e4-99d5-2b05b3d9e3bc.
 </pi-background>
 ```
 
@@ -654,9 +644,9 @@ then reaches both readers as the nudge in C.
 
 The model never receives any of the following.
 
-### The job counter under the editor
+### The job count in pi's footer
 
-A one-line widget below the input box, present only while at least one job is running:
+One status, under the key `pi-background`, present only while at least one job is running:
 
 | Running jobs | Text |
 |---|---|
@@ -664,9 +654,11 @@ A one-line widget below the input box, present only while at least one job is ru
 | 2 commands | `2 commands` |
 | 1 subagent | `1 subagent` |
 | 2 commands and 1 subagent | `2 commands, 1 subagent` |
-| none | the widget is removed |
+| none | the status is cleared |
 
-This is pure UI. It is not a session entry and is never saved.
+The key is the extension's own name, so `pi-powerline-footer` can lift it out of its overflow row
+into a segment of its own with a `customItems` entry naming that key. This is pure UI. It is not a
+session entry and is never saved.
 
 ### The `/jobs` listing
 
@@ -702,7 +694,9 @@ Thrown or logged outside a tool call, so pi shows them as an extension error or 
 
 | Where | Text |
 |---|---|
-| `session_start` | `pi-background.json: <schema message>` |
+| `session_start` | `<file> + <file>: unknown key "<key>". The keys are maxDepth, nudgeModel, nudgeThinking, isolated, logFile, debug.` |
+| `session_start` | `<file> + <file>: "<key>" is <value>, which that key does not take.` |
+| `session_start` | `<file> is not valid JSON: <parser message>` |
 | `session_start` | `pi-background.json: nudgeModel and nudgeThinking must be set together` |
 | `session_start` | `pi-background: --jobs-depth must be a whole number, got "<value>"` |
 | startup | `pi-background: could not read starttime from /proc/self/stat` |
@@ -725,6 +719,7 @@ Written to disk, read by nobody unless asked for:
 | `<agent dir>/jobs/<job id>/stderr` | an agent child's stderr |
 | `<agent dir>/jobs/<job id>/result` | an agent job's final assistant message, as plain text |
 | `<agent dir>/state/<pid>.json` | the activity file: pid, process start time, session id, cwd, and `active` or `idle` |
+| `<agent dir>/pi-background.log` | one JSON line per job event: `start`, `detach`, `overrun`, `end`, `stop`, and each `nudge` |
 
 The model reaches `output` and `result` only by reading the paths it was given. The activity file
 is for RMNG, not for either reader.

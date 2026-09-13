@@ -1,7 +1,8 @@
 # pi-background — design
 
 One pi extension: subagents, background commands, a completion nudge, and an activity signal
-for an external supervisor. Linux, single user.
+for an external supervisor. Linux, single user. Published as is: no support, and no promise
+that anything here stays the same (C1).
 
 ---
 
@@ -175,15 +176,20 @@ read. An agent's output is never shown, to either of you: it is pi's JSON event 
 | A command that outlived the wait | its last lines, the id, the path | the same last lines, then `Still running after 60s, expected 60s.` / `Now in the background.` |
 | Starting a background job | prose, the id, the output path | `bash dev server` and `Expected: none` |
 | `job_list` | grouped records with ids and paths | the `/jobs` table |
-| `job_stop` | final state, elapsed, path | the tool line alone; the counter is the rest of the answer |
+| `job_stop` | final state, elapsed, path | the tool line alone; the footer count is the rest of the answer |
 | A completion | the tagged record and the path | one sentence, and the exit code for a command |
 
-Two surfaces have no model side at all. A widget under the editor counts what is live, and hides
-when nothing is:
+Two surfaces have no model side at all. A footer status counts what is live, and is cleared when
+nothing is:
 
 ```
 2 commands, 1 subagent
 ```
+
+**The status key is `pi-background`**, the extension's own name, so `pi-powerline-footer` can lift
+it out of its overflow row into a segment of its own with a `customItems` entry naming that key. A
+widget of our own below the editor was the first version; it took a row of its own next to the
+powerline bar, which is placed below the editor too, and the two competed for the same height.
 
 `/jobs` lists them as a table, as a durable entry: `job id`, `type`, `title`, `elapsed`, `expected`,
 each column sized to its widest cell, durations right-aligned, the heading dimmed.
@@ -206,7 +212,14 @@ called a job, not what it ran. That is the trade `title` buys (§1): a good titl
 than a truncated command, and a bad one is all you get.
 
 The model-facing half of every string in this table is transcribed verbatim in
-`MODEL-FACING-TEXT.md`, alongside yours, so the boundary can be audited without reading the code.
+`docs/MODEL-FACING-TEXT.md`, alongside yours, so the boundary can be audited without reading the
+code.
+
+**The model's half is written in sentences, and carries no markdown.** An earlier version used
+labelled lines — `job id: …`, `elapsed: …`, `exit code: …` — which read as a form to be parsed
+rather than a report to be understood, and which pi-context-fold did not share. One style across
+both extensions is worth more than the two characters a label saves. Your half stays terse,
+because it is read at a glance and not reasoned about.
 
 There is still no `job_logs`. Output is one file and pi has `read`. Live status across several
 jobs is not one file, which is the difference.
@@ -696,7 +709,11 @@ built, and needing no forwarding rules to survive an `ssh` hop.
   "isolated": {
     "create":       "rmng-sandbox-create",
     "instructions": "Work happens in /home/rmng/work. Read a file there with: <ssh> cat <path>. The sandbox stays up after the job ends; run `rmng-sandbox-destroy <sandbox id>` when you are done with it."
-  }
+  },
+
+  // The log. null or absent means ~/.pi/agent/pi-background.log; debug adds the noisy records.
+  "logFile": null,
+  "debug": false
 }
 ```
 
@@ -723,7 +740,26 @@ one too: no default, no partial load. A half-validated config is worse than none
 path advertises coverage the code does not have. **No file at all is not a failure** — it means no nudge, no
 isolated jobs, and no nesting; local command jobs and local subagents work with no configuration.
 
+The merged object is validated against the schema, but the **unknown key is found before the
+schema runs**, because a schema checker reports only "must not have additional properties" and
+never names the key — and the key's name is the one thing a typo needs. The same code is in
+pi-context-fold.
+
 The project file is read without a trust check (§12).
+
+### §9.5 The log
+
+One JSON line per event, appended to `logFile`, default `~/.pi/agent/pi-background.log`. No
+levels, no rotation, no size cap. The events are `start`, `detach`, `overrun`, `end` and `stop`
+for a job, and `nudge` for a classifier nudge that fired.
+
+It exists because a background job's failure is invisible by the time you notice it: the
+notification has scrolled away, the session may have ended, and the output file says what the
+command printed but not when the job started, overran or was stopped. A write that fails throws
+where it is called; nothing substitutes a value for it (C10). `debug` is reserved for per-turn
+records and is not yet used by anything here.
+
+The same `log.ts` is in pi-context-fold, byte for byte.
 
 ---
 
@@ -734,6 +770,8 @@ The project file is read without a trust check (§12).
 | `index.ts` | config, flag, tool registration and descriptions, session events, activity file, nudge |
 | `jobs.ts` | registry, `start`, `stop`, `finalise` → status + notify + activity, output files |
 | `command-job.ts` | pi's shell backend, environment, output |
+| `log.ts` | one JSON line per event; the same file in pi-context-fold |
+| `shown.ts` | the TUI components both readers' halves are drawn with; the same file in pi-context-fold |
 | `agent-job.ts` | argv for local and ssh, sandbox create, stdin, stdout pipe, result extraction |
 
 Four files. Tool descriptions and both renderers sit next to the registration they describe, and
