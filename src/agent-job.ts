@@ -59,8 +59,12 @@ export function runAgent(job: Job, run: AgentRun): Promise<Outcome> {
 		child.on("close", (code, signal) =>
 			resolve(
 				code === 0 && !failure
-					? { status: "done" }
-					: { status: "failed", reason: failure ?? (signal ? `killed by ${signal}` : `exit ${code}`) },
+					? { status: "done", exitCode: code }
+					: {
+							status: "failed",
+							exitCode: code,
+							reason: failure ?? (signal ? `killed by ${signal}` : `exit ${code}`),
+						},
 			),
 		);
 		child.stdin.end(run.task);

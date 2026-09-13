@@ -6,7 +6,7 @@ export function runCommand(job: Job, command: string, cwd: string): Promise<Outc
 		.exec(command, cwd, { onData: (chunk) => write(job, chunk), signal: job.signal })
 		.then(({ exitCode }) =>
 			exitCode === 0
-				? { status: "done" as const }
-				: { status: "failed" as const, reason: `exit ${exitCode ?? "signal"}` },
+				? { status: "done" as const, exitCode }
+				: { status: "failed" as const, exitCode },
 		);
 }

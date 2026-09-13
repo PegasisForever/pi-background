@@ -5,13 +5,16 @@ import {
 	getAgentDir,
 	getShellConfig,
 	ModelRuntime,
+	Theme,
 } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, Text } from "@earendil-works/pi-tui";
+import { Box, Spacer, Text } from "@earendil-works/pi-tui";
+import type { Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
 import { parseSandbox, runAgent } from "./agent-job.ts";
+import type { Sandbox } from "./agent-job.ts";
 import { runCommand } from "./command-job.ts";
 import * as jobs from "./jobs.ts";
 
@@ -23,8 +26,10 @@ const MAX_NUDGES_PER_TURN = 5;
 /** A classification was measured at 1.8 s; this only has to bound a stalled connection. */
 const CLASSIFIER_TIMEOUT_MS = 60_000;
 const NUDGE_PROMPT =
-	"Below is an assistant message that ended a turn. If it promised a next action that it did " +
-	"not perform, reply with that action in at most 15 words. Otherwise reply with exactly: NO";
+	"Below is an assistant message that ended a turn. If it promised a next action that it is " +
+	"going to do (only includes next actions the assistant is going to do, not include the next " +
+	"action it says the user is going to do), reply with that action in at most 15 words. " +
+	"Otherwise reply with exactly: NO";
 
 const ConfigSchema = Type.Object(
 	{
@@ -91,10 +96,28 @@ const assistantText = (content: readonly { type: string }[]): string =>
 		.map((c) => c.text)
 		.join("");
 
-const firstLine = (text: string): string => {
-	const line = text.trim().split("\n", 1)[0] as string;
-	return line.length > 120 ? `${line.slice(0, 120)}…` : line;
+const TitleParam = Type.String({ description: "Short title for this job, shown in the job list" });
+const TimeoutParam = Type.Number({
+	minimum: 1,
+	description: "Seconds to wait before giving up, as pi's bash tool counts them",
+});
+
+/** What a tool tells the TUI and never tells the model. */
+interface Shown {
+	lines: string[];
+}
+
+const rows = (theme: Theme, lines: string[], background = false): Component => {
+	const box = new Box(1, 1, background ? (t: string) => theme.bg("customMessageBg", t) : undefined);
+	for (const line of lines) box.addChild(new Text(theme.fg("toolOutput", line), 0, 0));
+	return box;
 };
+
+const header = (theme: Theme, name: string, title?: string): Component =>
+	new Text(theme.fg("toolTitle", theme.bold(name)) + (title ? ` ${title}` : ""), 0, 0);
+
+const shown = (result: { details?: Shown }, theme: Theme): Component =>
+	rows(theme, result.details?.lines ?? []);
 
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag("jobs-depth", { type: "string", description: "Internal: remaining subagent depth" });
@@ -181,155 +204,202 @@ export default function (pi: ExtensionAPI) {
 		pi.sendUserMessage(`You said you would ${action}, but did not. Continue.`);
 	}
 
-	pi.registerEntryRenderer<{ lines: string[] }>("pi-background-listing", (entry, _options, theme) => {
-		const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
-		for (const line of entry.data?.lines ?? []) box.addChild(new Text(line, 0, 0));
+	pi.registerEntryRenderer<Shown>("pi-background-listing", (entry, _options, theme) =>
+		rows(theme, entry.data?.lines ?? [], true),
+	);
+
+	pi.registerMessageRenderer<Shown>("pi-background", (message, _options, theme) => {
+		const box = new Box(1, 1, (t: string) => theme.bg("customMessageBg", t));
+		box.addChild(new Text(theme.fg("customMessageLabel", theme.bold("[pi-background]")), 0, 0));
+		box.addChild(new Spacer(1));
+		for (const line of message.details?.lines ?? []) {
+			box.addChild(new Text(theme.fg("customMessageText", line), 0, 0));
+		}
 		return box;
 	});
 
 	pi.registerCommand("jobs", {
 		description: "List running jobs (shown to you only, never sent to the model)",
 		handler: async () => {
-			const live = jobs.running();
-			pi.appendEntry("pi-background-listing", {
-				lines: live.length === 0 ? ["No jobs running."] : live.map((j) => jobs.summarise(j)),
-			});
+			pi.appendEntry<Shown>("pi-background-listing", { lines: jobs.summariseAll() });
 		},
+	});
+
+	/** Both readers are served from one job: text for the model, lines for the TUI. */
+	const answer = (job: jobs.Job) => ({
+		content: [{ type: "text" as const, text: jobs.started(job) }],
+		details: { lines: [`Timeout: ${jobs.timeoutText(job)}`] },
 	});
 
 	function registerTools(): void {
 		const isolated = config.isolated;
-		pi.registerTool({
+		pi.registerTool<typeof RunCommandParams, Shown>({
 			name: "run_command",
 			label: "Run command",
 			description:
 				"Start a shell command in the background and return immediately. Give timeoutSeconds a " +
 				"number for work you are waiting on: the result is delivered to you automatically when it " +
 				"ends, so end your turn rather than polling or sleeping. Give it null for a service that " +
-				"runs until stopped and never notifies. It returns a job id, which job_list and job_stop take.",
-			parameters: Type.Object({
-				command: Type.String({ description: "Shell command" }),
-				cwd: Type.Optional(Type.String({ description: "Working directory" })),
-				timeoutSeconds: Type.Union([Type.Number({ minimum: 1 }), Type.Null()], {
-					description:
-						"Seconds to wait, as pi's bash tool counts them. Pass null for a service such as a " +
-						"dev server: it runs until stopped and never notifies.",
-				}),
-			}),
+				"runs until stopped; you are told if it stops on its own. It returns a job id, which " +
+				"job_list and job_stop take.",
+			parameters: RunCommandParams,
 			async execute(_id, params, _signal, _onUpdate, toolCtx) {
 				const cwd = params.cwd ?? toolCtx.cwd;
-				const job = jobs.start(
-					{ kind: "command", label: firstLine(params.command), cwd, timeoutSeconds: params.timeoutSeconds },
-					(j) => runCommand(j, params.command, cwd),
+				return answer(
+					jobs.start(
+						{ kind: "command", title: params.title, cwd, timeoutSeconds: params.timeoutSeconds },
+						(j) => runCommand(j, params.command, cwd),
+					),
 				);
-				return { content: [{ type: "text", text: jobs.describe(job) }], details: {} };
 			},
+			renderCall: (params, theme) => header(theme, "run_command", params.title),
+			renderResult: (result, _options, theme) => shown(result, theme),
 		});
 
 		if (depthRemaining > 0) {
-			pi.registerTool({
+			const RunAgentParams = Type.Object({
+				task: Type.String({ description: "The complete instruction for the subagent" }),
+				title: TitleParam,
+				timeoutSeconds: TimeoutParam,
+				cwd: Type.Optional(Type.String({ description: "Working directory" })),
+				// Offered only when a sandbox provider is configured, so there is nothing to refuse.
+				...(isolated
+					? {
+							isolation: Type.Optional(
+								Type.Union([Type.Literal("local"), Type.Literal("isolated")], {
+									description: "isolated runs in a fresh sandbox",
+								}),
+							),
+						}
+					: {}),
+			});
+
+			pi.registerTool<typeof RunAgentParams, Shown>({
 				name: "run_agent",
 				label: "Run agent",
 				description:
 					"Start a subagent on a task and return immediately. The result is delivered to you " +
 					"automatically when it finishes, so end your turn rather than polling or sleeping. " +
-					"The subagent starts with no context: put everything it needs in the task. It returns a " +
-					"job id, which job_list and job_stop take." +
+					"The subagent starts with no context: put everything it needs in the task. It returns " +
+					"a job id, which job_list, job_stop and resume_agent take." +
 					(isolated ? `\n\n${isolated.instructions}` : ""),
-				parameters: Type.Object({
-					task: Type.String({ description: "The complete instruction for the subagent" }),
-					timeoutSeconds: Type.Number({
-						minimum: 1,
-						description: "Seconds to wait before giving up, as pi's bash tool counts them",
-					}),
-					cwd: Type.Optional(Type.String({ description: "Working directory; not allowed with resumeFrom" })),
-					resumeFrom: Type.Optional(Type.String({ description: "Job id to continue" })),
-					// Offered only when a sandbox provider is configured, so there is nothing to refuse.
-					...(isolated
-						? {
-								isolation: Type.Optional(
-									Type.Union([Type.Literal("local"), Type.Literal("isolated")], {
-										description: "isolated runs in a fresh sandbox",
-									}),
-								),
-							}
-						: {}),
-				}),
+				parameters: RunAgentParams,
 				async execute(_id, params, _signal, _onUpdate, toolCtx) {
-					const previous = params.resumeFrom ? jobs.get(params.resumeFrom) : undefined;
-					if (params.resumeFrom) {
-						if (!previous) throw new Error(`no such job: ${params.resumeFrom}`);
-						if (previous.status === "running") {
-							throw new Error(`job ${previous.id} is still running; stop it or wait for it`);
-						}
-						if (params.isolation) {
-							throw new Error("resumeFrom continues the original job's host; drop isolation");
-						}
-						if (params.cwd) {
-							throw new Error("resumeFrom continues the original job's directory; drop cwd");
-						}
-						if (jobs.list().some((j) => j.status === "running" && j.sessionOf === previous.sessionOf)) {
-							throw new Error(`another job is already continuing ${previous.id}`);
-						}
-					}
-					let sandbox;
+					let sandbox: Sandbox | undefined;
 					if (isolated && params.isolation === "isolated") {
 						const shell = getShellConfig();
 						const run = await pi.exec(shell.shell, [...shell.args, isolated.create]);
 						if (run.code !== 0) throw new Error(`isolated.create failed: ${run.stderr.trim()}`);
 						sandbox = parseSandbox(run.stdout);
 					}
-					const ssh = sandbox?.ssh ?? previous?.ssh;
-					const cwd = sandbox?.cwd ?? previous?.cwd ?? params.cwd ?? toolCtx.cwd;
-					const job = jobs.start(
-						{
-							kind: "agent",
-							label: firstLine(params.task),
-							cwd,
-							timeoutSeconds: params.timeoutSeconds,
-							sandboxId: sandbox?.id ?? previous?.sandboxId,
-							ssh,
-							sessionOf: previous?.sessionOf,
-						},
-						(j) =>
-							runAgent(j, {
-								task: params.task,
+					const cwd = sandbox?.cwd ?? params.cwd ?? toolCtx.cwd;
+					return answer(
+						jobs.start(
+							{
+								kind: "agent",
+								title: params.title,
 								cwd,
-								depthRemaining,
-								sessionDir: previous?.dir ?? j.dir,
-								sessionId: previous?.id ?? j.id,
-								ssh,
-							}),
+								timeoutSeconds: params.timeoutSeconds,
+								sandboxId: sandbox?.id,
+								ssh: sandbox?.ssh,
+							},
+							(j) =>
+								runAgent(j, {
+									task: params.task,
+									cwd,
+									depthRemaining,
+									sessionDir: j.dir,
+									sessionId: j.id,
+									ssh: sandbox?.ssh,
+								}),
+						),
 					);
-					return { content: [{ type: "text", text: jobs.describe(job) }], details: {} };
 				},
+				renderCall: (params, theme) => header(theme, "run_agent", params.title),
+				renderResult: (result, _options, theme) => shown(result, theme),
+			});
+
+			pi.registerTool<typeof ResumeAgentParams, Shown>({
+				name: "resume_agent",
+				label: "Resume agent",
+				description:
+					"Continue a finished subagent with a follow-up task. It keeps the original job's " +
+					"context, directory and host, so it takes neither cwd nor isolation. It returns a new " +
+					"job id, which job_list, job_stop and resume_agent take.",
+				parameters: ResumeAgentParams,
+				async execute(_id, params) {
+					const previous = jobs.get(params.jobId);
+					if (!previous) throw new Error(`no such job: ${params.jobId}`);
+					if (previous.kind !== "agent") throw new Error(`job ${previous.id} is not a subagent`);
+					if (previous.status === "running") {
+						throw new Error(`job ${previous.id} is still running; stop it or wait for it`);
+					}
+					if (jobs.running().some((j) => j.sessionOf === previous.sessionOf)) {
+						throw new Error(`another job is already continuing ${previous.id}`);
+					}
+					return answer(
+						jobs.start(
+							{
+								kind: "agent",
+								title: params.title,
+								cwd: previous.cwd,
+								timeoutSeconds: params.timeoutSeconds,
+								sandboxId: previous.sandboxId,
+								ssh: previous.ssh,
+								sessionOf: previous.sessionOf,
+							},
+							(j) =>
+								runAgent(j, {
+									task: params.task,
+									cwd: previous.cwd,
+									depthRemaining,
+									sessionDir: previous.dir,
+									sessionId: previous.id,
+									ssh: previous.ssh,
+								}),
+						),
+					);
+				},
+				renderCall: (params, theme) => header(theme, "resume_agent", params.title),
+				renderResult: (result, _options, theme) => shown(result, theme),
 			});
 		}
 
-		pi.registerTool({
+		pi.registerTool<typeof NoParams, Shown>({
 			name: "job_list",
 			label: "List jobs",
 			description:
-				"Every job this session started with run_command or run_agent: status, elapsed, output " +
-				"paths and sandbox ids.",
-			parameters: Type.Object({}),
+				"Every job this session still has running, grouped by kind, with elapsed time and " +
+				"timeout. A finished job is not listed: it reported itself when it ended.",
+			parameters: NoParams,
 			async execute() {
-				const all = jobs.list();
-				const text = all.length === 0 ? "no jobs" : all.map(jobs.describe).join("\n\n");
-				return { content: [{ type: "text", text }], details: {} };
+				return {
+					content: [{ type: "text", text: jobs.listing() }],
+					details: { lines: jobs.summariseAll() },
+				};
 			},
+			renderCall: (_params, theme) => header(theme, "job_list"),
+			renderResult: (result, _options, theme) => shown(result, theme),
 		});
 
-		pi.registerTool({
+		pi.registerTool<typeof JobStopParams, Shown>({
 			name: "job_stop",
 			label: "Stop job",
 			description: "Stop a running job by its id — a shell command or a subagent.",
-			parameters: Type.Object({ id: Type.String() }),
+			parameters: JobStopParams,
 			async execute(_id, params) {
-				const job = await jobs.stop(params.id);
-				if (!job) throw new Error(`no such job: ${params.id}`);
-				return { content: [{ type: "text", text: jobs.describe(job) }], details: {} };
+				const before = jobs.get(params.id);
+				if (!before) throw new Error(`no such job: ${params.id}`);
+				const wasRunning = before.status === "running";
+				await jobs.stop(params.id);
+				return {
+					content: [{ type: "text", text: jobs.stopped(before, wasRunning) }],
+					details: { lines: [] },
+				};
 			},
+			renderCall: (params, theme) =>
+				header(theme, "job_stop", jobs.get(params.id)?.title ?? params.id),
+			renderResult: (result, _options, theme) => shown(result, theme),
 		});
 	}
 
@@ -372,3 +442,24 @@ export default function (pi: ExtensionAPI) {
 		if (event.source !== "extension") nudgesThisTurn = 0;
 	});
 }
+
+const RunCommandParams = Type.Object({
+	command: Type.String({ description: "Shell command" }),
+	title: TitleParam,
+	cwd: Type.Optional(Type.String({ description: "Working directory" })),
+	timeoutSeconds: Type.Union([Type.Number({ minimum: 1 }), Type.Null()], {
+		description:
+			"Seconds to wait, as pi's bash tool counts them. Pass null for a service such as a dev " +
+			"server: it has no time limit and runs until stopped.",
+	}),
+});
+
+const ResumeAgentParams = Type.Object({
+	jobId: Type.String({ description: "Job id of the finished subagent to continue" }),
+	task: Type.String({ description: "The follow-up instruction for the subagent" }),
+	title: TitleParam,
+	timeoutSeconds: TimeoutParam,
+});
+
+const NoParams = Type.Object({});
+const JobStopParams = Type.Object({ id: Type.String({ description: "Job id to stop" }) });

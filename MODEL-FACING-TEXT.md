@@ -8,9 +8,7 @@ This extension writes text for two readers, and they do not see the same things.
 A third reader appears once: the **nudge classifier**, a separate model that never sees your
 session and whose session never sees it.
 
-Every section below states both views. Where they are identical, that is said explicitly rather
-than left to be assumed, because for tool results it is currently true and it does not have to be
-(see "Why the two views are identical for tool results" at the end).
+Every section below states both views.
 
 ---
 
@@ -19,14 +17,17 @@ than left to be assumed, because for tool results it is currently true and it do
 | Text | The model | You |
 |---|---|---|
 | Tool descriptions and parameter descriptions | every turn | never |
-| Tool call header | never | the tool's name, in bold |
-| Tool results | in full | the same text, first 10 lines |
-| Job completion notifications | in full | the same text, with a `[pi-background]` label |
+| Tool call header | never | the tool's name and the job's title |
+| Tool results | in full | a short line the tool wrote for you alone |
+| Job completion notifications | in full | a short line, under a `[pi-background]` label |
 | The nudge | in full | the same text, as a user message |
 | The nudge classifier's prompt | never | never |
 | The job counter under the editor | never | always, when a job is running |
 | The `/jobs` listing | never | when you run `/jobs` |
 | Configuration and startup errors | never | when they happen |
+
+The model's view and yours are produced separately for every tool and every notification. A tool
+returns `content` for the model and `details` for the TUI; only `content` reaches the provider.
 
 ---
 
@@ -38,19 +39,23 @@ Every turn, for as long as the tool is registered.
 
 #### `run_command`
 
-> Start a shell command in the background and return immediately. Give timeoutSeconds a number for work you are waiting on: the result is delivered to you automatically when it ends, so end your turn rather than polling or sleeping. Give it null for a service that runs until stopped and never notifies. It returns a job id, which job_list and job_stop take.
+> Start a shell command in the background and return immediately. Give timeoutSeconds a number for work you are waiting on: the result is delivered to you automatically when it ends, so end your turn rather than polling or sleeping. Give it null for a service that runs until stopped; you are told if it stops on its own. It returns a job id, which job_list and job_stop take.
 
 | Parameter | Description |
 |---|---|
 | `command` | Shell command |
+| `title` | Short title for this job, shown in the job list |
 | `cwd` | Working directory |
-| `timeoutSeconds` | **Required.** Seconds to wait, as pi's bash tool counts them. Pass null for a service such as a dev server: it runs until stopped and never notifies. |
+| `timeoutSeconds` | Seconds to wait, as pi's bash tool counts them. Pass null for a service such as a dev server: it has no time limit and runs until stopped. |
+
+`command`, `title` and `timeoutSeconds` are required. `title` is required because it is the only
+thing you ever see: the command itself never reaches your screen.
 
 #### `run_agent`
 
 Registered only when the session has depth left.
 
-> Start a subagent on a task and return immediately. The result is delivered to you automatically when it finishes, so end your turn rather than polling or sleeping. The subagent starts with no context: put everything it needs in the task. It returns a job id, which job_list and job_stop take.
+> Start a subagent on a task and return immediately. The result is delivered to you automatically when it finishes, so end your turn rather than polling or sleeping. The subagent starts with no context: put everything it needs in the task. It returns a job id, which job_list, job_stop and resume_agent take.
 
 Then, when `isolated` is configured, a blank line and **your `isolated.instructions` string
 verbatim**. This is the one piece of model-facing text that comes from config rather than source.
@@ -61,14 +66,31 @@ The value in the test config reads:
 | Parameter | Description |
 |---|---|
 | `task` | The complete instruction for the subagent |
-| `timeoutSeconds` | **Required.** Seconds to wait before giving up, as pi's bash tool counts them |
-| `cwd` | Working directory; not allowed with resumeFrom |
+| `title` | Short title for this job, shown in the job list |
+| `timeoutSeconds` | Seconds to wait before giving up, as pi's bash tool counts them |
+| `cwd` | Working directory |
 | `isolation` | isolated runs in a fresh sandbox — **this row exists only when `isolated` is configured**; with no provider the parameter is not registered at all |
-| `resumeFrom` | Job id to continue |
+
+#### `resume_agent`
+
+Registered with `run_agent`.
+
+> Continue a finished subagent with a follow-up task. It keeps the original job's context, directory and host, so it takes neither cwd nor isolation. It returns a new job id, which job_list, job_stop and resume_agent take.
+
+| Parameter | Description |
+|---|---|
+| `jobId` | Job id of the finished subagent to continue |
+| `task` | The follow-up instruction for the subagent |
+| `title` | Short title for this job, shown in the job list |
+| `timeoutSeconds` | Seconds to wait before giving up, as pi's bash tool counts them |
+
+This is a separate tool rather than a `resumeFrom` parameter on `run_agent` so that two whole
+classes of error cannot happen: a resume can no longer be given a `cwd` or an `isolation` that
+contradicts the job it is continuing.
 
 #### `job_list`
 
-> Every job this session started with run_command or run_agent: status, elapsed, output paths and sandbox ids.
+> Every job this session still has running, grouped by kind, with elapsed time and timeout. A finished job is not listed: it reported itself when it ended.
 
 No parameters.
 
@@ -78,20 +100,27 @@ No parameters.
 
 | Parameter | Description |
 |---|---|
-| `id` | *(none)* |
+| `id` | Job id to stop |
 
 ### What you see
 
 **None of the above.** Tool descriptions never appear in the TUI.
 
-What you see instead is one bold line above each tool result, holding the tool's **name**:
+What you see instead is one line per tool call, written by the extension: the tool's name followed
+by the job's title.
 
 ```
-run_command
+run_command long sleeper
+run_agent greeter
+resume_agent greeter follow-up
+job_stop long sleeper
+job_list
 ```
 
-Each tool also registers a `label` — `Run command`, `Run agent`, `List jobs`, `Stop job` — but
-pi's interactive tool view does not display it. The names are what reach your screen.
+`job_stop` shows the title of the job it is stopping, looked up by id, so you never read an id.
+
+Each tool also registers a `label` — `Run command`, `Run agent`, `Resume agent`, `List jobs`,
+`Stop job` — which pi's interactive tool view does not display.
 
 ### What neither sees
 
@@ -102,224 +131,253 @@ The CLI flag `--jobs-depth`, described as `Internal: remaining subagent depth`. 
 
 ## B. Tool results
 
-One section per tool. The four tools share a formatter, `describe()` in `src/jobs.ts`, but the
-lines it emits differ per tool, so each is written out in full below rather than cross-referenced.
+One section per tool, and one per reader. The two views are produced separately: the model gets a
+record it can act on, you get one line that says what changed.
 
-A thrown error reaches the model as that tool's result, so each tool's errors are listed with it.
+### `run_command`
 
-**Your view, for all four tools, is the same text the model gets.** The extension registers no
-`renderResult`, so pi falls back to printing the model's own text: the first 10 lines, inside its
-standard coloured tool block. If there are more than 10 lines it adds
+#### What the model sees
 
-```
-... (3 more lines, ctrl+o to expand)
-```
-
-`ctrl+o` expands every tool result in the transcript; clicking one result expands just that one.
-Each per-tool section below therefore describes one text, read by both of you.
-
-### `run_command` — result of a successful call
-
-Always three lines. `run_command` never takes an `isolation` parameter, so a command job can never
-have a sandbox id, and command jobs have no result file.
+Three lines for an awaited command:
 
 ```
-<job id>  [running]  0s
-ran: <label>
-output: <agent dir>/jobs/<job id>/output
+Command <title> is started in the background, you will be notified when it finishes.
+job id: <job id>
+The command output is piped to: <agent dir>/jobs/<job id>/output
+```
+
+The first line differs for a service, which has no deadline:
+
+```
+Command <title> is started in the background. It has no time limit; you will be notified if it stops.
 ```
 
 Concretely:
 
 ```
-01a09638-0a27-72de-9e2b-7cf185110453  [running]  0s
-ran: sleep 20; echo finished
-output: /home/rmng/.pi/agent/jobs/01a09638-0a27-72de-9e2b-7cf185110453/output
+Command long sleeper is started in the background. It has no time limit; you will be notified if it stops.
+job id: 01a09979-cbb7-7639-87ae-48ae2d46581d
+The command output is piped to: /home/rmng/.pi/agent/jobs/01a09979-cbb7-7639-87ae-48ae2d46581d/output
 ```
 
-- `<job id>` is a uuidv7.
-- The status is **always** `[running]`. `run_command` returns the moment the job starts, so neither
-  reader ever sees another status from this tool.
-- The elapsed field is **always** `0s` for the same reason.
-- `<label>` is the `command` argument: leading and trailing whitespace stripped, first line only,
-  and if that line is longer than 120 characters it is cut at 120 and `…` is appended.
-- There is **no** `result:` line. That line belongs to agent jobs only.
-- There is **no** `sandbox:` line.
-- `<agent dir>` is `$PI_CODING_AGENT_DIR`, or `~/.pi/agent` when that is unset.
+`<agent dir>` is `$PI_CODING_AGENT_DIR`, or `~/.pi/agent` when that is unset. A command job never
+has a sandbox, because `run_command` has no `isolation` parameter.
 
-Three lines is under the 10-line preview, so you see all of it without expanding.
-
-The model needs the job id, because `job_stop` takes it. You never type a job id, so for you the
-first line carries one useful word, `running`, in front of a 36-character uuid.
-
-### `run_command` — errors
-
-None the model can cause. `run_command` validates nothing beyond the schema pi enforces for it, and
-it returns as soon as the job is registered. A command that exits non-zero is reported later as a
-job status, not as an error from this call.
-
-### `run_agent` — result of a successful call
-
-Four or five lines. The fifth appears only for a job that has a sandbox id.
-
-Without a sandbox — a local subagent, or a `resumeFrom` of a local one:
+#### What you see
 
 ```
-<job id>  [running]  0s
-ran: <label>
-output: <agent dir>/jobs/<job id>/output
-result: <agent dir>/jobs/<job id>/result
+run_command long sleeper
+  Timeout: none
 ```
 
-With a sandbox — `isolation: "isolated"`, or a `resumeFrom` of a job that had a sandbox:
+`Timeout:` is the number of seconds, or `none` for a service. No id, no path, no command.
+
+#### Errors
+
+None the model can cause. `run_command` validates nothing beyond the schema pi enforces for it,
+and it returns as soon as the job is registered. A command that exits non-zero is reported later
+as a completion, not as an error from this call.
+
+### `run_agent`
+
+#### What the model sees
 
 ```
-<job id>  [running]  0s
-ran: <label>
-output: <agent dir>/jobs/<job id>/output
-result: <agent dir>/jobs/<job id>/result
+Agent <title> is started in the background, you will be notified when it finishes.
+job id: <job id>
+```
+
+An isolated subagent adds a third line:
+
+```
 sandbox: <sandbox id>
 ```
 
-Concretely:
+There is no output path and no result path. The raw output of an agent job is pi's JSON event
+stream, which is of no use to the model; the path to its answer arrives with the completion
+message, once the answer exists.
+
+`timeoutSeconds` is a required number, so an agent job is always awaited.
+
+#### What you see
 
 ```
-01a0991f-e35b-7203-afe8-c73c03ac623e  [running]  0s
-ran: Run the shell command: sleep 300. Then reply DONE.
-output: /home/rmng/.pi/agent/jobs/01a0991f-e35b-7203-afe8-c73c03ac623e/output
-result: /home/rmng/.pi/agent/jobs/01a0991f-e35b-7203-afe8-c73c03ac623e/result
+run_agent greeter
+  Timeout: 120s
 ```
 
-- The status is **always** `[running]` and the elapsed field is **always** `0s`, as with
-  `run_command`.
-- `<label>` is the `task` argument, cut the same way: stripped, first line only, 120 characters
-  plus `…`.
-- The `result:` line is present on **every** `run_agent` result, including a job that later fails.
-  The file it names does not exist yet at the moment this text is returned; it is written when the
-  job ends.
-- `<job id>` is a new uuidv7 on every call, including a `resumeFrom` call. A resumed job therefore
-  reports different `output:` and `result:` paths from the job it continues.
-- `<sandbox id>` is the `id` field printed by the configured `isolated.create` command.
+#### Errors
 
-Five lines is still under the preview limit, so you see all of it.
-
-### `run_agent` — errors
-
-Eight distinct messages. The first five are argument errors and are raised before anything runs.
+Three messages, all from the sandbox provider. `run_agent` no longer takes a `resumeFrom`, so it
+has no argument errors left at all.
 
 | # | Message | Raised when |
 |---|---|---|
-| 1 | `no such job: <id>` | `resumeFrom` names an id this session has no job for |
-| 2 | `job <id> is still running; stop it or wait for it` | `resumeFrom` names a job that has not finished |
-| 3 | `resumeFrom continues the original job's host; drop isolation` | `resumeFrom` and `isolation` are both given |
-| 4 | `resumeFrom continues the original job's directory; drop cwd` | `resumeFrom` and `cwd` are both given |
-| 5 | `another job is already continuing <id>` | a second resume of the same subagent session while the first is still running |
-| 6 | `isolated.create failed: <stderr, trimmed>` | the configured `isolated.create` command exits non-zero |
-| 7 | `isolated.create must print {id, ssh, cwd}: <stdout, trimmed>` | its output parses as JSON but is missing `id`, `ssh` or `cwd` |
-| 8 | `isolated.create ssh must start with ssh: <the ssh value>` | its `ssh` field's first word is not `ssh` |
+| 1 | `isolated.create failed: <stderr, trimmed>` | the configured `isolated.create` command exits non-zero |
+| 2 | `isolated.create must print {id, ssh, cwd}: <stdout, trimmed>` | its output parses as JSON but is missing `id`, `ssh` or `cwd` |
+| 3 | `isolated.create ssh must start with ssh: <the ssh value>` | its `ssh` field's first word is not `ssh` |
 
-Messages 6 to 8 are reachable only when `isolated` is configured. If `isolated.create` prints
-something that is not JSON at all, both readers instead see the raw `JSON.parse` message from the
-runtime, for example `Unexpected token o in JSON at position 1`.
+All three are reachable only when `isolated` is configured. If `isolated.create` prints something
+that is not JSON at all, both readers instead see the raw `JSON.parse` message from the runtime,
+for example `Unexpected token o in JSON at position 1`.
 
-These are written to teach the model how to fix the call. You see the same sentence, marked as an
-error by pi's own framing.
+### `resume_agent`
 
-### `job_list` — result
+#### What the model sees
 
-Every job this session started, running and finished alike, oldest first, each rendered exactly as
-that job's own tool would render it and separated by one blank line:
+The same three lines as `run_agent`, with a **new** job id. The `sandbox:` line is present when
+the job being continued had one, since a resume stays on the same host.
 
 ```
-01a09638-0a27-72de-9e2b-7cf185110453  [done]  20s
-ran: sleep 20; echo finished
-output: /home/rmng/.pi/agent/jobs/01a09638-0a27-72de-9e2b-7cf185110453/output
-
-01a0991f-e35b-7203-afe8-c73c03ac623e  [failed: exit 1]  3s
-ran: Run the shell command: sleep 300. Then reply DONE.
-output: /home/rmng/.pi/agent/jobs/01a0991f-e35b-7203-afe8-c73c03ac623e/output
-result: /home/rmng/.pi/agent/jobs/01a0991f-e35b-7203-afe8-c73c03ac623e/result
+Agent greeter follow-up is started in the background, you will be notified when it finishes.
+job id: 01a0997c-9319-7639-87ae-48b4998f00b1
 ```
 
-When the session has started no jobs at all, the entire result is the two words:
+#### What you see
 
 ```
-no jobs
+resume_agent greeter follow-up
+  Timeout: 120s
 ```
 
-Unlike `run_command` and `run_agent`, this tool can show statuses other than `[running]` and
-elapsed values other than `0s`. See "Status and elapsed" below.
+#### Errors
 
-This is the one tool whose result routinely passes 10 lines: three jobs already do. Past that you
-see a preview and `ctrl+o` to see the rest. `/jobs` is the human equivalent and shows running jobs
-only, one line each — see section E.
+| Message | Raised when |
+|---|---|
+| `no such job: <id>` | `jobId` names an id this session has no job for |
+| `job <id> is not a subagent` | `jobId` names a shell command |
+| `job <id> is still running; stop it or wait for it` | the job has not finished |
+| `another job is already continuing <id>` | a second resume of the same subagent session while the first is still running |
 
-### `job_list` — errors
+### `job_list`
+
+#### What the model sees
+
+Running jobs only, grouped by kind, with a count in each header. A finished job is not listed: it
+already reported itself when it ended.
+
+```
+2 in progress background commands:
+
+01a09979-cbb7-7639-87ae-48ae2d46581d
+title: long sleeper
+output path: /home/rmng/.pi/agent/jobs/01a09979-cbb7-7639-87ae-48ae2d46581d/output
+elapsed: 0s
+timeout: none
+
+01a09979-cbb8-7639-87ae-48b1389afa99
+title: quick failure
+output path: /home/rmng/.pi/agent/jobs/01a09979-cbb8-7639-87ae-48b1389afa99/output
+elapsed: 0s
+timeout: 60s
+
+1 in progress agent:
+
+01a09979-cbb9-7639-87ae-48b3100fbdd1
+title: greeter
+elapsed: 0s
+timeout: 120s
+```
+
+A group with no jobs is omitted. A header goes singular at one job. An agent entry carries no
+output path, for the reason given under `run_agent`, and carries `sandbox: <id>` when it has one.
+
+When nothing is running:
+
+```
+no jobs running
+```
+
+#### What you see
+
+Exactly what `/jobs` prints — one line per running job:
+
+```
+job_list
+  cmd      0s  long sleeper
+  cmd      0s  quick failure
+  agent    0s  greeter
+```
+
+#### Errors
 
 None.
 
-### `job_stop` — result of a successful call
+### `job_stop`
 
-The record for the job named by `id`, after the stop has fully settled, rendered exactly as that
-job's own tool renders it. For a command job:
+#### What the model sees
 
 ```
-01a098fc-ea7e-7155-854c-ee29c54b99be  [failed: stopped]  40s
-ran: sleep 300
-output: /home/rmng/.pi/agent/jobs/01a098fc-ea7e-7155-854c-ee29c54b99be/output
+Job <title> is stopped.
+elapsed: <duration>
+output path: <agent dir>/jobs/<job id>/output
 ```
 
-For an agent job the `result:` line is present, and `sandbox:` too when it had one.
+The third line is `response path: <agent dir>/jobs/<job id>/result` for a subagent, since the raw
+output of an agent job is a JSON event stream.
 
-Stopping a job that has already finished is not an error: the tool returns that job's existing
-record, with whatever status it already had.
+Stopping a job that has already ended is not an error. The first line says so instead:
 
-### `job_stop` — errors
+```
+Job long sleeper had already ended: stopped.
+elapsed: 42s
+output path: /home/rmng/.pi/agent/jobs/01a09979-cbb7-7639-87ae-48ae2d46581d/output
+```
+
+The word after the colon is one of `finished`, `failed`, `timed out` or `stopped`.
+
+**A job ended by job_stop sends no completion message.** The model already has this answer, so a
+second delivery would only cost it a turn.
+
+#### What you see
+
+```
+job_stop long sleeper
+```
+
+One line. The job is gone from the counter under the editor, which is the rest of the answer.
+
+#### Errors
 
 | Message | Raised when |
 |---|---|
 | `no such job: <id>` | `id` names no job this session started |
 
-### Status and elapsed, as they appear in `job_list`, `job_stop` and the notifications in C
+### Outcome words, elapsed and exit code
 
-The bracketed field is one of:
+A job that has ended is one of four things. The same four words are used everywhere:
 
-| Text | Meaning |
+| Word | Meaning |
 |---|---|
-| `[running]` | the job has not ended |
-| `[done]` | the job ended successfully |
-| `[failed: <reason>]` | the job ended unsuccessfully |
+| `finished` | ended successfully |
+| `failed` | ended unsuccessfully |
+| `timed out` | `timeoutSeconds` elapsed |
+| `stopped` | `job_stop` ended it |
 
-`<reason>` differs by job kind, because the two kinds are run by different code:
+An abort outranks whatever the underlying process reported, so a stopped or timed-out job says
+`stopped` or `timed out` rather than repeating the operating system's phrasing for a kill.
 
-| Job kind | `<reason>` | Produced when |
-|---|---|---|
-| command | `exit <n>` | the shell command exited with status `n` |
-| command | `exit signal` | the shell reported no exit status |
-| command | `stopped` | `job_stop` aborted it |
-| command | `timeout` | `timeoutSeconds` elapsed |
-| command | `stopped (<message>)` or `timeout (<message>)` | it aborted and the underlying error said more than the abort itself |
-| agent | `exit <n>` | the child `pi` process exited with status `n` |
-| agent | `killed by <signal>` | the child was killed, for example `killed by SIGKILL` |
-| agent | `The operation was aborted` | `job_stop` aborted it, or `timeoutSeconds` elapsed — the child process reports the abort before the job layer can label it |
-| agent | `no assistant message in the last 4194304 bytes of <path>` | the child exited 0 but produced no final assistant message |
-| agent | `unparsable event in <path> line <n>` | the child's JSON output stream was corrupt |
-| agent | any spawn error message | for example `spawn ssh ENOENT` |
+`exit code` is the command's exit status, or `none` when it was killed and had none. It is
+reported for commands only.
 
-The elapsed field is: `<n>s` below one minute, `<m>m<ss>s` below one hour, `<h>h<mm>m` above —
-for example `9s`, `3m58s`, `2h04m`.
+`exit reason` appears only when it says something the exit code does not. A command that exits 7
+shows the code and no reason. An agent that failed shows a reason such as `spawn ssh ENOENT`,
+`killed by SIGKILL`, `exit 1`, `no assistant message in the last 4194304 bytes of <path>`, or
+`unparsable event in <path> line <n>`.
+
+`elapsed` is `<n>s` below one minute, `<m>m<ss>s` below one hour, `<h>h<mm>m` above — for example
+`9s`, `3m58s`, `2h04m`.
 
 ---
 
 ## C. Injected messages
 
-Two kinds, three sources. They enter the conversation and stay there. All three are visible to
-both readers, with different framing.
+Two kinds, three sources. They enter the conversation and stay there.
 
 ### A finished `run_command` job's notification
 
-Sent by the extension, not by a tool, when a command job started with a **number** for
-`timeoutSeconds` ends. A command job started with `null` never sends this.
+Sent by the extension, not by a tool, when a command job ends on its own. **Every** command job
+sends one, awaited or service; only a job ended by `job_stop` stays silent.
 
 #### What the model sees
 
@@ -328,70 +386,66 @@ it wakes the agent for a new turn. Wrapped in tags:
 
 ```
 <pi-background>
-01a0962c-6dd4-73cf-8ad4-e807ce713de8  [done]  20s
-ran: sleep 20; echo finished
-output: /home/rmng/.pi/agent/jobs/01a0962c-6dd4-73cf-8ad4-e807ce713de8/output
+Background command quick failure failed.
+job id: 01a09979-cbb8-7639-87ae-48b1389afa99
+elapsed: 3s
+exit code: 7
+read the command output at: /home/rmng/.pi/agent/jobs/01a09979-cbb8-7639-87ae-48b1389afa99/output
 </pi-background>
 ```
 
-The three lines inside the tags are the same shape `run_command` returned, with `[running]  0s`
-replaced by the job's final status and its real duration. There is no `result:` line and no
-`sandbox:` line, for the same reasons as in B.
+An `exit reason:` line sits between `exit code:` and the output path when there is one.
 
 The message carries **no instruction**. The "end your turn rather than polling" wording exists
 only in the tool description in A.
 
 #### What you see
 
-The same text, because the message is sent with `display: true`. pi gives it a bold label naming
-the custom type, a blank line, and then renders the body as Markdown:
-
 ```
 [pi-background]
 
-<pi-background>
-01a0962c-6dd4-73cf-8ad4-e807ce713de8  [done]  20s
-ran: sleep 20; echo finished
-output: /home/rmng/.pi/agent/jobs/01a0962c-6dd4-73cf-8ad4-e807ce713de8/output
-</pi-background>
+Background command quick failure failed in 3s.
+Exit code: 7
 ```
 
-The `<pi-background>` tags are shown to you literally. They exist to bound the block for the model
-and have no meaning for a reader, so you see the type named twice — once by pi's label and once by
-the opening tag.
+An `Exit reason:` line follows when there is one. No id, no path, no tags.
 
-### A finished `run_agent` job's notification
+### A finished `run_agent` or `resume_agent` job's notification
 
-Sent on the same mechanism, with the same `pi-background` type and the same wrapping tags. Every
-agent job sends one: `run_agent` requires a number for `timeoutSeconds`, so the null case that
-silences a command job cannot occur here.
+Sent on the same mechanism, with the same type and tags.
 
 #### What the model sees
 
-Without a sandbox:
-
 ```
 <pi-background>
-01a0991f-e35b-7203-afe8-c73c03ac623e  [done]  8s
-ran: Run the shell command: sleep 300. Then reply DONE.
-output: /home/rmng/.pi/agent/jobs/01a0991f-e35b-7203-afe8-c73c03ac623e/output
-result: /home/rmng/.pi/agent/jobs/01a0991f-e35b-7203-afe8-c73c03ac623e/result
+Agent greeter finished.
+job id: 01a09979-cbb9-7639-87ae-48b3100fbdd1
+elapsed: 5s
+
+read the agent response at: /home/rmng/.pi/agent/jobs/01a09979-cbb9-7639-87ae-48b3100fbdd1/result
 </pi-background>
 ```
 
-With a sandbox, a fifth line `sandbox: <sandbox id>` follows `result:`.
+There is no exit code: for a subagent the outcome word carries the whole answer. An `exit reason:`
+line appears when it failed.
 
-The `result:` file exists by the time this message is sent. It holds the subagent's final
-assistant message as plain text, and is empty when a failed job produced none. The message does
-not quote it: the model must read the file.
+The `read the agent response at:` line is present **only when that file is not empty**. A killed
+or crashed subagent often wrote nothing, and pointing the model at an empty file wastes a read.
+The file holds the subagent's final assistant message as plain text. The message does not quote
+it: the model must read the file.
 
 Like the command notification, this carries no instruction.
 
 #### What you see
 
-The same text under the same `[pi-background]` label. The subagent's answer is **not** shown to
-you either — it is in the `result:` file. In practice you learn what the subagent said one turn
-later, when the model reads that file and tells you.
+```
+[pi-background]
+
+Agent greeter finished in 5s.
+```
+
+The subagent's answer is not shown to you. In practice you learn what it said one turn later, when
+the model reads that file and tells you.
 
 ### The nudge
 
@@ -415,11 +469,13 @@ than five nudges have been sent this turn, **no awaited job is running**, the la
 assistant message that did not end in an error or an abort, its text is non-empty, and the
 classifier replied with something other than `NO`.
 
+A service does not count as an awaited job. A dev server left running for hours must not silence
+the nudge, or mark your session busy, for as long as it lives.
+
 #### What you see
 
 The same sentence, in a user message block indistinguishable from one you typed. Nothing marks it
-as machine-written. If you are watching the screen, a nudge looks like you sending a message you
-do not remember sending.
+as machine-written.
 
 ---
 
@@ -429,7 +485,10 @@ Sent to `nudgeModel`. **Neither the session model nor you ever sees it.**
 
 System prompt:
 
-> Below is an assistant message that ended a turn. If it promised a next action that it did not perform, reply with that action in at most 15 words. Otherwise reply with exactly: NO
+> Below is an assistant message that ended a turn. If it promised a next action that it is going to do (only includes next actions the assistant is going to do, not include the next action it says the user is going to do), reply with that action in at most 15 words. Otherwise reply with exactly: NO
+
+The parenthesis exists because the classifier used to fire on an assistant message that ended by
+telling the user what to do next. That is not an unkept promise.
 
 The single user message is the last assistant message's text, with nothing added — no framing, no
 session context, no tool history.
@@ -441,8 +500,7 @@ then reaches both readers as the nudge in C.
 
 ## E. Text only you see
 
-The model never receives any of the following. That boundary is deliberate and is worth being able
-to audit, which is why they are listed here.
+The model never receives any of the following.
 
 ### The job counter under the editor
 
@@ -465,20 +523,19 @@ This is pure UI. It is not a session entry and is never saved.
 > List running jobs (shown to you only, never sent to the model)
 
 It writes a session entry of a custom type that pi keeps out of the model's context by design. One
-line per **running** job — finished jobs are not listed, and a job appearing in the list is
-therefore running by definition:
+line per running job:
 
 ```
-cmd    3m58s  sleep 400
-cmd    3m58s  sleep 400
-agent  3m58s  Run the shell command: sleep 300. Then reply DONE.
+cmd    3m58s  long sleeper
+cmd    3m58s  quick failure
+agent  3m58s  greeter
 ```
 
 The format is: `cmd` or `agent` padded to 5 characters, the elapsed time right-aligned in 6, two
-spaces, the job's label, and for a sandboxed job ` · <sandbox id>` appended.
+spaces, the job's title, and for a sandboxed job ` · <sandbox id>` appended.
 
 No job id, because you are not the one calling `job_stop`. No status, because everything listed is
-running.
+running. This is the same listing `job_list` shows you.
 
 When nothing is running:
 
@@ -516,26 +573,11 @@ Written to disk, read by nobody unless asked for:
 | `<agent dir>/jobs/<job id>/result` | an agent job's final assistant message, as plain text |
 | `<agent dir>/state/<pid>.json` | the activity file: pid, process start time, session id, cwd, and `active` or `idle` |
 
-The model reaches `output` and `result` only by reading the paths the tool results gave it. The
-activity file is for RMNG, not for either reader.
+The model reaches `output` and `result` only by reading the paths it was given. The activity file
+is for RMNG, not for either reader.
 
----
-
-## Why the two views are identical for tool results
-
-pi lets a tool return two separate things: `content`, which goes to the model, and `details`, which
-is stored for the UI and is never put in the request to the provider. A tool can then supply a
-`renderResult` function that draws whatever it likes from `details`.
-
-This extension supplies none, so pi falls back to printing the model's own `content` at you. That
-is why section B has one text and not two.
-
-The consequence is visible in every `run_command` result: the uuid exists because `job_stop` takes
-it, and you are shown it even though you never type one. Adding `renderResult` would separate the
-two views without changing a single character the model reads.
-
-The same applies to the notifications in C: `registerMessageRenderer` would let the
-`[pi-background]` blocks render for you without their tags.
+The shell command itself is also in neither view after the call: it is in the tool call arguments
+in the session file, and nowhere else. Your screen shows the title the model wrote.
 
 ---
 
@@ -543,4 +585,4 @@ The same applies to the notifications in C: `registerMessageRenderer` would let 
 
 No system-prompt contribution, no `promptSnippet`, no `promptGuidelines`, no skills, no prompt
 templates. Sections A to D are the complete surface. A session with this extension loaded and no
-jobs running carries only the four tool descriptions.
+jobs running carries only the five tool descriptions.
