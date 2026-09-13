@@ -63,17 +63,19 @@ A **job** is work the parent started that finishes later.
 ```
 job
 ├── id       uuidv7
-├── timeout  minutes; required for an agent, optional for a command
+├── timeout  seconds, or null for a service (an agent may not be null)
 ├── status   running | done | failed
 ├── reason   set when failed: an exit code, "timeout", or "stopped"
 └── dir      ~/.pi/jobs/<id>/
 ```
 
-For a command, `timeout` present means **awaited work**: it notifies when it ends, and the
-session counts as active while it runs. `timeout` absent means a **service** — a dev server, a
-watcher, a tail. A service never notifies and never makes the session active.
+`timeoutSeconds` is **required on every call** and counted the way pi's own `bash` tool counts it.
+A number means **awaited work**: it notifies when it ends, and the session counts as active while
+it runs. `null` means a **service** — a dev server, a watcher, a tail — which never notifies and
+never makes the session active. There is no default, so the caller states which it is rather than
+getting one by omission.
 
-An agent always finishes, so an agent job always has a timeout and is always awaited.
+An agent always finishes, so `run_agent` does not accept `null`.
 
 One predicate, `isAwaited(job)` — `timeout` is present — drives the notification rule (§6) and
 the activity file (§8). Whether a command will finish on its own is stated by the agent that
@@ -85,8 +87,8 @@ started it, not inferred later.
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| `run_command` | `command`, `cwd?`, `timeoutMinutes?` | id, output path, one line on delivery |
-| `run_agent` | `task`, `timeoutMinutes`, `cwd?`, `isolation?`, `resumeFrom?` | id, output path, sandbox id when isolated |
+| `run_command` | `command`, `timeoutSeconds` (number or null), `cwd?` | id, output path, one line on delivery |
+| `run_agent` | `task`, `timeoutSeconds` (number), `cwd?`, `isolation?`, `resumeFrom?` | id, output path, sandbox id when isolated |
 | `job_list` | — | one row per job this session: id, what ran, status and reason, elapsed, output path, sandbox id when isolated |
 | `job_stop` | `id` | final status |
 
@@ -294,9 +296,9 @@ Every job carries one `AbortSignal`:
 
 ```js
 const stop = new AbortController();
-const signal = timeoutMinutes
-  ? AbortSignal.any([stop.signal, AbortSignal.timeout(timeoutMinutes * 60_000)])
-  : stop.signal;
+const signal = timeoutSeconds === null
+  ? stop.signal
+  : AbortSignal.any([stop.signal, AbortSignal.timeout(timeoutSeconds * 1000)]);
 ```
 
 `job_stop` aborts `stop` and waits for the job to settle, so it reports the final status rather

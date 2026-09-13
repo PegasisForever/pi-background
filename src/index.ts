@@ -170,19 +170,23 @@ export default function (pi: ExtensionAPI) {
 			name: "run_command",
 			label: "Run command",
 			description:
-				"Start a shell command in the background and return immediately. Set timeoutMinutes for " +
-				"work you are waiting on: the result is delivered to you automatically when it ends, so " +
-				"end your turn rather than polling or sleeping. Omit timeoutMinutes for a service such as " +
-				"a dev server: it runs until stopped and never notifies.",
+				"Start a shell command in the background and return immediately. Give timeoutSeconds a " +
+				"number for work you are waiting on: the result is delivered to you automatically when it " +
+				"ends, so end your turn rather than polling or sleeping. Give it null for a service that " +
+				"runs until stopped and never notifies.",
 			parameters: Type.Object({
 				command: Type.String({ description: "Shell command" }),
 				cwd: Type.Optional(Type.String({ description: "Working directory" })),
-				timeoutMinutes: Type.Optional(Type.Number({ minimum: 1, description: "Omit only for a service" })),
+				timeoutSeconds: Type.Union([Type.Number({ minimum: 1 }), Type.Null()], {
+					description:
+						"Seconds to wait, as pi's bash tool counts them. Pass null for a service such as a " +
+						"dev server: it runs until stopped and never notifies.",
+				}),
 			}),
 			async execute(_id, params, _signal, _onUpdate, toolCtx) {
 				const cwd = params.cwd ?? toolCtx.cwd;
 				const job = jobs.start(
-					{ kind: "command", label: params.command, cwd, timeoutMinutes: params.timeoutMinutes },
+					{ kind: "command", label: params.command, cwd, timeoutSeconds: params.timeoutSeconds },
 					(j) => runCommand(j, params.command, cwd),
 				);
 				return { content: [{ type: "text", text: jobs.describe(job) }], details: {} };
@@ -200,7 +204,10 @@ export default function (pi: ExtensionAPI) {
 					(config.isolated ? `\n\n${config.isolated.instructions}` : ""),
 				parameters: Type.Object({
 					task: Type.String({ description: "The complete instruction for the subagent" }),
-					timeoutMinutes: Type.Number({ minimum: 1, description: "Give up after this long" }),
+					timeoutSeconds: Type.Number({
+						minimum: 1,
+						description: "Seconds to wait before giving up, as pi's bash tool counts them",
+					}),
 					cwd: Type.Optional(Type.String({ description: "Working directory; not allowed with resumeFrom" })),
 					isolation: Type.Optional(
 						Type.Union([Type.Literal("local"), Type.Literal("isolated")], {
@@ -241,7 +248,7 @@ export default function (pi: ExtensionAPI) {
 							kind: "agent",
 							label: firstLine(params.task),
 							cwd,
-							timeoutMinutes: params.timeoutMinutes,
+							timeoutSeconds: params.timeoutSeconds,
 							sandboxId: sandbox?.id ?? previous?.sandboxId,
 							ssh,
 							sessionOf: previous?.sessionOf,

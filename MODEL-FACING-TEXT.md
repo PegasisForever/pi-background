@@ -17,13 +17,13 @@ Errors thrown from a tool reach the model as that tool's result, so they are in 
 
 Label: `Run command`
 
-> Start a shell command in the background and return immediately. Set timeoutMinutes for work you are waiting on: the result is delivered to you automatically when it ends, so end your turn rather than polling or sleeping. Omit timeoutMinutes for a service such as a dev server: it runs until stopped and never notifies.
+> Start a shell command in the background and return immediately. Give timeoutSeconds a number for work you are waiting on: the result is delivered to you automatically when it ends, so end your turn rather than polling or sleeping. Give it null for a service that runs until stopped and never notifies.
 
 | Parameter | Description |
 |---|---|
 | `command` | Shell command |
 | `cwd` | Working directory |
-| `timeoutMinutes` | Omit only for a service |
+| `timeoutSeconds` | **Required.** Seconds to wait, as pi's bash tool counts them. Pass null for a service such as a dev server: it runs until stopped and never notifies. |
 
 ### `run_agent`
 
@@ -38,8 +38,8 @@ Then, when `isolated` is configured, a blank line and **your `isolated.instructi
 | Parameter | Description |
 |---|---|
 | `task` | The complete instruction for the subagent |
-| `timeoutMinutes` | *(none)* |
-| `cwd` | *(none)* |
+| `timeoutSeconds` | **Required.** Seconds to wait before giving up, as pi's bash tool counts them |
+| `cwd` | Working directory; not allowed with resumeFrom |
 | `isolation` | isolated runs in a fresh sandbox |
 | `resumeFrom` | Job id to continue |
 

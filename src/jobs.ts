@@ -13,7 +13,7 @@ export interface Job {
 	label: string;
 	cwd: string;
 	dir: string;
-	timeoutMinutes?: number;
+	timeoutSeconds: number | null;
 	status: JobStatus;
 	reason?: string;
 	startedAt: number;
@@ -48,7 +48,7 @@ export function init(pi: ExtensionAPI, activityRefresh: () => void): void {
 
 export const list = (): Job[] => [...jobs.values()];
 export const get = (id: string): Job | undefined => jobs.get(id);
-const isAwaited = (job: Job): boolean => job.timeoutMinutes !== undefined;
+const isAwaited = (job: Job): boolean => job.timeoutSeconds !== null;
 export const activeCount = (): number =>
 	list().filter((j) => j.status === "running" && isAwaited(j)).length;
 
@@ -56,7 +56,7 @@ export interface StartOptions {
 	kind: JobKind;
 	label: string;
 	cwd: string;
-	timeoutMinutes?: number;
+	timeoutSeconds: number | null;
 	sandboxId?: string;
 	ssh?: string;
 	sessionOf?: string;
@@ -75,7 +75,7 @@ export function start(options: StartOptions, run: (job: Job) => Promise<Outcome>
 		label: options.label,
 		cwd: options.cwd,
 		dir,
-		timeoutMinutes: options.timeoutMinutes,
+		timeoutSeconds: options.timeoutSeconds,
 		status: "running",
 		startedAt: Date.now(),
 		sandboxId: options.sandboxId,
@@ -83,9 +83,9 @@ export function start(options: StartOptions, run: (job: Job) => Promise<Outcome>
 		sessionOf: options.sessionOf ?? id,
 		stop,
 		signal:
-			options.timeoutMinutes === undefined
+			options.timeoutSeconds === null
 				? stop.signal
-				: AbortSignal.any([stop.signal, AbortSignal.timeout(options.timeoutMinutes * 60_000)]),
+				: AbortSignal.any([stop.signal, AbortSignal.timeout(options.timeoutSeconds * 1000)]),
 		outputFd: openSync(join(dir, "output"), "a"),
 		settled: promise,
 	};
