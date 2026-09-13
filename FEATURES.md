@@ -3,8 +3,10 @@
 > **Frozen record, not current documentation.** This is the menu that was put in front of you
 > before anything was built, with your marks on it, kept because the reasons for the picks are
 > here and nowhere else. Its API details are the ones that were *proposed*, and several were
-> changed afterwards — `timeoutMinutes` became `timeoutSeconds`, `resumeFrom` became the
-> `resume_agent` tool, and jobs gained a required `title`.
+> changed afterwards — `timeoutMinutes` became `timeoutSeconds` and then `expectedSeconds`, which
+> kills nothing; `resumeFrom` became the `resume_agent` tool; jobs gained a required `title`; and
+> `run_command` became `bash`, replacing pi's own shell tool and waiting for a short command
+> instead of always returning at once.
 >
 > For what the extension does now, read `DESIGN.md`. For every string it emits, read
 > `MODEL-FACING-TEXT.md`. Neither of those is a record of how the design was reached; this is.

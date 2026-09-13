@@ -1,8 +1,8 @@
 # pi-background
 
-A [pi](https://github.com/badlogic/pi-mono) extension that gives an agent four things: background
-shell commands, subagents, a prod when it stops mid-promise, and a file an external supervisor can
-read to tell whether the session is busy.
+A [pi](https://github.com/badlogic/pi-mono) extension that gives an agent four things: a shell tool
+that moves a slow command into the background instead of killing it, subagents, a prod when it
+stops mid-promise, and a file an external supervisor can read to tell whether the session is busy.
 
 Built for one person on one machine. Linux only, pi 0.85.1, no Windows path handling and no
 Node version detection. See the constitution at the top of [DESIGN.md](DESIGN.md) for why it is
@@ -10,17 +10,27 @@ allowed to be that narrow.
 
 ## What it does
 
-**Background commands.** `run_command` starts a shell command and returns immediately. The agent
-ends its turn; when the command finishes, a message wakes the agent and tells it the exit code and
-where the output is. A command started with `expectedSeconds: null` is a *service* — a dev server, a
-watcher — that nothing is waiting on. It still reports when it stops, so a crashed dev server is not
-silent.
+**One shell tool, two speeds.** `bash` replaces pi's built-in one. Every call carries a title and
+`expectedSeconds`, the agent's own estimate. Under three minutes the command runs in front of the
+agent and returns its output and exit code, like any shell tool. Three minutes or more — and any
+`expectedSeconds: null`, which means a *service* such as a dev server — starts in the background at
+once, and a message wakes the agent when it ends. A service reports when it stops too, so a crashed
+dev server is not silent.
 
-**Nothing is killed by the clock.** `expectedSeconds` is an estimate, not a deadline. When a job
-passes it the job keeps running and the agent is told: *still running after 12m, longer than the
-120s you expected. It has not been stopped. Leave it running, or stop it with job_stop.* It repeats
-at each multiple of the estimate, never more often than once every five minutes. An agent is bad at
-guessing how long work takes, and a low guess should cost a message, not the work.
+**Nothing is killed by the clock.** The estimate is an estimate, not a deadline. A command that
+passes it is not stopped: the agent is handed the output so far and the job id, and the command
+carries on in the background. *Still running after 12m, longer than the 120s you expected. It has
+not been stopped. Leave it running, or stop it with job_stop.* That repeats at each multiple of the
+estimate, never more often than once every five minutes. An agent is bad at guessing how long work
+takes, and a low guess should cost a message, not the work.
+
+**Escape stops the waiting, not the command.** Interrupt a command that is running in front of the
+agent and it moves to the background, as an overrun does. `job_stop` is the only thing that ends a
+job early.
+
+**The whole output is always on disk.** Every command writes to `~/.pi/agent/jobs/<id>/output`. What
+the agent is shown is the last 10 lines or 1000 bytes, whichever is shorter, and the path. When that
+is not enough it reads the file.
 
 **Subagents.** `run_agent` starts a whole `pi` process on a task, locally or inside a sandbox
 reached over SSH, and reports the same way. There is one kind of subagent: no roles, no presets, no
@@ -101,7 +111,7 @@ An unknown key, a wrong type or a bad thinking level is a startup error, not a s
 
 | Tool | What it does |
 |---|---|
-| `run_command` | start a shell command; `expectedSeconds: null` for a service |
+| `bash` | run a shell command; under 3 minutes it waits, longer it backgrounds; `expectedSeconds: null` for a service |
 | `run_agent` | start a subagent, locally or in a sandbox |
 | `resume_agent` | continue a finished subagent with a follow-up task |
 | `job_list` | what is still running |
@@ -154,3 +164,6 @@ Written down in full in §12 of DESIGN.md. The ones worth knowing before you sta
 - Jobs die when pi dies. There is no daemon.
 - A job that hangs runs until something stops it. It reports that it has overrun, every five
   minutes, and the decision stays with the agent.
+- Every command leaves a directory under `~/.pi/agent/jobs/`, `ls` included, and nothing removes
+  them.
+- A command that buffers its output hands off with nothing to show but the path.

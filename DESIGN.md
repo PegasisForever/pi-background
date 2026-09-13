@@ -66,6 +66,7 @@ job
 ├── title     the model's own name for it, required
 ├── expected  seconds you expect it to take, or null for a service (an agent may not be null)
 ├── status    running | done | failed | stopped
+├── waiting   true while the model is still waiting for this command's result (§4.1)
 ├── exitCode  a command's exit status, or null when it was killed
 ├── reason    set when it says more than the status and the code do
 └── dir       ~/.pi/agent/jobs/<id>/
@@ -77,10 +78,26 @@ caller states which it is rather than getting one by omission.
 
 An agent always finishes, so `run_agent` and `resume_agent` do not accept `null`.
 
+For a command the estimate also decides **who waits**. Under 180 seconds the command runs in front
+of the model: the tool call does not return until it ends, and the result is the end of its output
+with the exit code, like any shell tool. At 180 seconds or more, and for every service, the
+command starts in the background at once. 180 is the line between "this is a shell command" and
+"this is a job", and it is the model's own estimate that puts it on one side or the other.
+
 **Nothing is ever killed by the clock.** `expectedSeconds` is an estimate, not a deadline: when it
 elapses the job keeps running and the model is told it overran (§6). Only `job_stop` and
 `session_shutdown` end a job early, which is why `status` has no `timeout` value and every job
 carries one signal.
+
+A foreground command that passes its estimate is not stopped either. The wait ends, the model is
+handed what has been produced so far along with the job id, and the command carries on in the
+background. That handoff **is** the overrun report, which is why a foreground job's overrun clock
+starts at the handoff rather than at the start (§5.2a).
+
+**Escape ends the wait, not the command.** pi aborts a tool call when the human interrupts. For a
+foreground command that means "stop waiting for this": the job moves to the background exactly as
+an overrun does, and the model is told which of the two happened. A job still carries one signal
+and `job_stop` is still the only thing that ends one early (§5.2).
 
 This is the correction of a real cost. As a deadline, an estimate that came in low killed work that
 was going fine, and the model has no good way to estimate in the first place. As a check-in, a low
@@ -101,7 +118,7 @@ first 120 characters of a shell command. The command itself stays in the tool ca
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| `run_command` | `command`, `title`, `expectedSeconds` (number or null), `cwd?` | id and output path |
+| `bash` | `command`, `title`, `expectedSeconds` (number or null), `cwd?` | the end of the output and the exit code, or an id and the output path |
 | `run_agent` | `task`, `title`, `expectedSeconds` (number), `cwd?`, `isolation?` when configured | id, and sandbox id when isolated |
 | `resume_agent` | `jobId`, `task`, `title`, `expectedSeconds` (number) | id, and sandbox id when the original had one |
 | `job_list` | — | the running jobs, grouped by kind: id, title, elapsed, expected, output path for a command, sandbox id when isolated |
@@ -109,6 +126,12 @@ first 120 characters of a shell command. The command itself stays in the tool ca
 
 Five tools, five tight schemas. The three start tools call the same internal `start()`; what is
 shared is the runtime, not the surface.
+
+**`bash` replaces pi's own.** Registering a tool by that name puts it in the registry in place of
+the built-in one, so there is nothing to disable and no flag for the human to pass. It is the only
+shell the model has, which is the point: a command cannot be started in a way that escapes the
+job registry, and the built-in `timeout` parameter — a second clock that killed — is gone with the
+tool that carried it. The cost is that every command now writes a job directory (§12).
 
 **Resuming is a tool, not a parameter.** As `run_agent({ resumeFrom })` it had to refuse a `cwd`
 and an `isolation` that contradict the job being continued, because a continuation inherits the
@@ -141,7 +164,9 @@ and only `content` reaches the provider; `renderCall` and `renderResult` draw fr
 
 | Surface | The model | You |
 |---|---|---|
-| Starting a job | prose, the id, the output path | `run_command deploy staging` and `Expected: 60s` |
+| A command that ended in front of it | its last lines, the exit code, the path | `bash run tests` and `Finished in 12s.` / `Exit code: 0` |
+| A command that outlived the wait | its last lines, the id, the path | `Still running after 60s, expected 60s.` / `Now in the background.` |
+| Starting a background job | prose, the id, the output path | `bash dev server` and `Expected: none` |
 | `job_list` | grouped records with ids and paths | the `/jobs` table |
 | `job_stop` | final state, elapsed, path | the tool line alone; the counter is the rest of the answer |
 | A completion | the tagged record and the path | one sentence, and the exit code for a command |
@@ -180,7 +205,7 @@ There is still no `job_logs`. Output is one file and pi has `read`. Live status 
 jobs is not one file, which is the difference.
 
 There is no `job_release`. Destroying a sandbox is one shell command, named in
-`isolated.instructions` (§3.5), and the model has `bash`.
+`isolated.instructions` (§3.5), and `bash` runs it.
 
 ---
 
@@ -340,10 +365,39 @@ second `SettingsManager`, whose `projectTrusted` option defaults to `true` — s
 in use here, so the question is deleted rather than answered. If one is ever set, jobs will run
 plain `bash` while the tool uses the configured shell; that is when to add it.
 
-Stdout and stderr arrive merged, as the `bash` tool merges them, and are appended to `output`.
+Stdout and stderr arrive merged, as pi's own shell tool merges them, and are appended to `output`.
 
 pi's shell backend spawns detached on POSIX and tracks the pid itself, killing what it started on
 exit. The abort signal is what ends a job (§5.2).
+
+### §4.1 The foreground wait
+
+A command with an estimate under 180 seconds is started exactly as any other job, and then waited
+for:
+
+```js
+const how = await waitInForeground(job, seconds, signal);   // "ended" | "overran" | "detached"
+if (job.status !== "running") return finished(job);          // the status is the authority
+detach(job, seconds, how === "overran");
+return handedOff(job, how === "overran");
+```
+
+**The wait is outside the job, not inside it.** The registry starts the command the same way for
+every case; only the tool waits. So a foreground command is a job with a job id, a directory and an
+`output` file from its first millisecond, and handing it off is not a conversion — it is the waiter
+letting go.
+
+**The status is the authority, not the race.** A command can end in the same tick the estimate
+expires, and `Promise.race` will report whichever of the two it happened to see first. `finalise`
+sets `status` before anything else, so reading `job.status` after the wait says what really
+happened. There is no `await` between that read and `detach`, so nothing can interleave.
+
+**The output is read back from the file, never accumulated.** Collection is unchanged: every byte
+goes to `output` as it always did. What the model is shown is the last `10` lines or `1000` bytes
+of that file, whichever is shorter, read from the last 64KB of it — pi's `truncateTail` does the
+cutting (C5). A build log can be large and ten lines are wanted, so the whole file is never read
+into memory. The path is always given, and pi's `read` tool is there when ten lines are not enough.
+
 ---
 
 ## §5. Lifecycle
@@ -390,6 +444,13 @@ An awaited job gets one `setInterval` at `expectedSeconds`, cleared in `finalise
 every multiple — `1x`, `2x`, `3x` — and each firing sends the overrun message of §6 unless one was
 sent less than five minutes ago.
 
+**A foreground job's clock starts when the wait ends, not when the job starts.** Its `1x` mark is
+the handoff, and the handoff already told the model it had overrun, so a clock started at the job
+would fire at the same instant and say it twice. Starting the interval in `detach` instead makes
+the first tick the `2x` mark, which is what §1 promises. When the wait ended because the human
+interrupted rather than because the estimate passed, no overrun has been reported yet, so
+`overrunAt` is left unset and the first tick reports normally.
+
 This extension used to run no timers of its own, which was worth saying while a deadline could be
 expressed as `AbortSignal.timeout`. A repeating check-in cannot be, so there is now one timer per
 awaited job and one `clearInterval` that must stay next to the code that closes the output file.
@@ -424,17 +485,20 @@ pi.sendMessage(
 
 ### §6.1 A job ended
 
-**A job notifies when it ends, unless `job_stop` is what ended it.** That is the whole rule. No
-exit code is inspected.
+**A job notifies when it ends, unless the model already has the answer.** That is the whole rule.
+No exit code is inspected.
+
+The model already has the answer in exactly two cases. `job_stop` returned the final state, so
+delivering it again would wake the agent for a turn to be told what it just did. And a foreground
+command returned its own output and exit code, so a message would be the same answer twice. Every
+other ending notifies.
 
 A service is included. It is not waited on, but it can still crash, and a dev server that dies in
-silence is discovered by something else failing an hour later. The exception is the other
-direction: a job the model stopped itself has already been answered by `job_stop`, so delivering
-it again would wake the agent for a turn to be told what it just did.
+silence is discovered by something else failing an hour later.
 
 The message carries the outcome word, the elapsed time, the title, the id, a command's exit code,
-and the path to read. `details` carries your half — one sentence, no id, no path — rendered by
-`registerMessageRenderer` (§2.1).
+the end of its output, and the path to read the whole of it. `details` carries your half — one
+sentence, no id, no path — rendered by `registerMessageRenderer` (§2.1).
 
 ### §6.2 A job overran
 
@@ -734,4 +798,15 @@ Written down so that when one bites, the real shape is handled rather than the i
     message, so the only record you see is the tool line and the counter dropping. If the stop
     came from something other than the model, there would be no message at all — today nothing
     else can stop a job.
+14. **Every command leaves a directory.** `bash` is the only shell the model has, so every command
+    it runs — `ls` included — creates `~/.pi/agent/jobs/<id>/` with an `output` file in it, and
+    nothing ever removes one. A working day is thousands of directories holding a few bytes each.
+    They are kept because the path in a transcript has to stay readable (§12.2), and deleting them
+    is a job for something outside this extension.
+15. **A foreground command holds the turn.** The tool call does not return for up to 180 seconds.
+    That is what a shell tool does, but it is new here: this extension used to return at once
+    every time, and a session can now sit inside one tool call for three minutes.
+16. **A command that hides its output until the end reports nothing at the handoff.** The last
+    lines come from the `output` file, so a command that buffers — many do when their stdout is
+    not a terminal — hands off with an empty body and the model sees only the path.
 

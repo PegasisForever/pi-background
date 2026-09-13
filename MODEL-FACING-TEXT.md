@@ -17,6 +17,7 @@ Every section below states both views.
 | Text | The model | You |
 |---|---|---|
 | Tool descriptions and parameter descriptions | every turn | never |
+| The `bash` prompt snippet, in the system prompt's tool list | every turn | never |
 | Tool call header | never | the tool's name and the job's title |
 | Tool results | in full | a short line the tool wrote for you alone |
 | Job completion notifications | in full | a short line, under a `[pi-background]` label |
@@ -38,22 +39,29 @@ returns `content` for the model and `details` for the TUI; only `content` reache
 
 Every turn, for as long as the tool is registered.
 
-#### `run_command`
+#### `bash`
 
-> Start a shell command in the background and return immediately. Give expectedSeconds a number for work you are waiting on: the result is delivered to you automatically when it ends, so end your turn rather than polling or sleeping. Give it null for a service that runs until stopped; you are told if it stops on its own. Nothing is ever killed by the clock — only job_stop ends a job early. It returns a job id, which job_list and job_stop take.
+This tool is named `bash`, so it replaces pi's built-in shell tool. The model has no other shell.
+
+> Run a shell command. A command you expect to take less than 180 seconds runs while you wait, and returns the end of its output with the exit code. Anything longer, and any service, starts in the background at once and is delivered to you when it ends, so end your turn rather than polling or sleeping. A command that passes your estimate is not stopped: it moves to the background and you are told when it ends, with a job id that job_list and job_stop take. Nothing is ever killed by the clock — only job_stop ends a command early. The whole output is always written to a file whose path you are given; read it when the end is not enough.
+
+It also contributes one line to the system prompt's list of available tools:
+
+> Run shell commands (ls, grep, find, etc.); a long one moves to the background
 
 | Parameter | Description |
 |---|---|
 | `command` | Shell command |
 | `title` | Short title for this job, shown in the job list |
 | `cwd` | Working directory |
-| `expectedSeconds` | Roughly how long you expect this to take, in seconds. Nothing is killed at that mark: if the command is still running you are told so, and you decide whether to let it continue. Pass null for a service such as a dev server, which you are not waiting on. |
+| `expectedSeconds` | Roughly how long you expect this to take, in seconds. It decides whether you wait for the command or it starts in the background. Nothing is killed at that mark: if the command is still running you are told so, and you decide whether to let it continue. Pass null for a service such as a dev server, which you are not waiting on. |
 
 `command`, `title` and `expectedSeconds` are required. `title` is required because it is the only
 thing you ever see: the command itself never reaches your screen.
 
-**`expectedSeconds` is not a deadline.** Nothing in this extension kills a job on a clock. See
-section C for what happens when a job passes it.
+**`expectedSeconds` is not a deadline.** Nothing in this extension kills a job on a clock. It
+decides only who waits: under 180 seconds the model waits for the command, at 180 or more it starts
+in the background. See section C for what happens when a command passes it.
 
 #### `run_agent`
 
@@ -114,7 +122,7 @@ What you see instead is one line per tool call, written by the extension: the to
 by the job's title.
 
 ```
-run_command long sleeper
+bash long sleeper
 run_agent greeter
 resume_agent greeter follow-up
 job_stop long sleeper
@@ -123,8 +131,8 @@ job_list
 
 `job_stop` shows the title of the job it is stopping, looked up by id, so you never read an id.
 
-Each tool also registers a `label` — `Run command`, `Run agent`, `Resume agent`, `List jobs`,
-`Stop job` — which pi's interactive tool view does not display.
+Each tool also registers a `label` — `bash`, `Run agent`, `Resume agent`, `List jobs`, `Stop job`
+— which pi's interactive tool view does not display.
 
 ### What neither sees
 
@@ -138,49 +146,122 @@ The CLI flag `--jobs-depth`, described as `Internal: remaining subagent depth`. 
 One section per tool, and one per reader. The two views are produced separately: the model gets a
 record it can act on, you get one line that says what changed.
 
-### `run_command`
+### `bash`
 
-#### What the model sees
+`bash` returns one of three results. Which one depends on `expectedSeconds` and on what the command
+did while the model waited.
 
-Three lines for an awaited command:
+#### What the model sees — the command ended while it waited
+
+`expectedSeconds` under 180, and the command finished first. The body is the last 10 lines or 1000
+bytes of the output file, whichever is shorter, or `(no output)` when the command printed nothing.
 
 ```
-Command <title> is started in the background, you will be notified when it finishes.
+<the end of the output>
+
+exit code: <exit code>
+elapsed: <elapsed>
+The whole output is at: <agent dir>/jobs/<job id>/output
+```
+
+An `exit reason:` line is added after `exit code:` when the runner reported one. Concretely:
+
+```
+alpha
+omega
+
+exit code: 0
+elapsed: 2s
+The whole output is at: /home/rmng/.pi/agent/jobs/01a09a6d-3b96-75bb-9ed6-8ec15ab85763/output
+```
+
+No job id: the command is over, so `job_list` will not list it and `job_stop` has nothing to stop.
+The path is the handle that outlives the call.
+
+#### What the model sees — the wait ended and the command did not
+
+`expectedSeconds` under 180, and either the estimate passed or the human interrupted. The body is
+the same end-of-output, and is left out entirely when there is none.
+
+```
+<the end of the output>
+
+Command <title> is still running after <elapsed>, longer than the <expectedSeconds>s you expected.
+It has not been stopped and is now in the background.
 job id: <job id>
-The command output is piped to: <agent dir>/jobs/<job id>/output
+The whole output is collected at: <agent dir>/jobs/<job id>/output
+You will be notified when it ends.
 ```
 
-The first line differs for a service, which has no deadline:
+When the human interrupted instead, that first sentence reads:
 
 ```
-Command <title> is started in the background. It has no time limit; you will be notified if it stops.
+Command <title> is still running after <elapsed>; you stopped waiting for it.
 ```
 
 Concretely:
 
 ```
-Command long sleeper is started in the background. It has no time limit; you will be notified if it stops.
-job id: 01a09979-cbb7-7639-87ae-48ae2d46581d
-The command output is piped to: /home/rmng/.pi/agent/jobs/01a09979-cbb7-7639-87ae-48ae2d46581d/output
+tick-1
+tick-2
+tick-3
+tick-4
+
+Command tick loop is still running after 4s, longer than the 4s you expected.
+It has not been stopped and is now in the background.
+job id: 01a09a6a-d8b4-740c-83ef-91218d51df7a
+The whole output is collected at: /home/rmng/.pi/agent/jobs/01a09a6a-d8b4-740c-83ef-91218d51df7a/output
+You will be notified when it ends.
+```
+
+#### What the model sees — the command started in the background
+
+`expectedSeconds` of 180 or more, or `null`. The model never waited, so there is no output yet.
+
+```
+Command <title> is started in the background, you will be notified when it finishes, and again if it is still running after <expectedSeconds>s.
+job id: <job id>
+The command output is piped to: <agent dir>/jobs/<job id>/output
+```
+
+The first line differs for a service, which is not waited on at all:
+
+```
+Command <title> is started in the background. You will be notified if it stops.
 ```
 
 `<agent dir>` is `$PI_CODING_AGENT_DIR`, or `~/.pi/agent` when that is unset. A command job never
-has a sandbox, because `run_command` has no `isolation` parameter.
+has a sandbox, because `bash` has no `isolation` parameter.
 
 #### What you see
 
+One of three, matching the three above.
+
 ```
-run_command long sleeper
+bash run tests
+Finished in 12s.
+Exit code: 0
+```
+
+```
+bash tick loop
+Still running after 4s, expected 4s.
+Now in the background.
+```
+
+The second line reads `Still running after 4s; you stopped waiting.` when you interrupted.
+
+```
+bash dev server
 Expected: none
 ```
 
-`Expected:` is the number of seconds, or `none` for a service. No id, no path, no command.
+`Expected:` is the number of seconds, or `none` for a service. No id, no path, no command, ever.
 
 #### Errors
 
-None the model can cause. `run_command` validates nothing beyond the schema pi enforces for it,
-and it returns as soon as the job is registered. A command that exits non-zero is reported later
-as a completion, not as an error from this call.
+None the model can cause. `bash` validates nothing beyond the schema pi enforces for it. A command
+that exits non-zero is reported through its `exit code:`, not as an error from this call.
 
 ### `run_agent`
 
@@ -381,10 +462,12 @@ shows the code and no reason. An agent that failed shows a reason such as `spawn
 
 Two kinds, three sources. They enter the conversation and stay there.
 
-### A finished `run_command` job's notification
+### A finished command job's notification
 
-Sent by the extension, not by a tool, when a command job ends on its own. **Every** command job
-sends one, awaited or service; only a job ended by `job_stop` stays silent.
+Sent by the extension, not by a tool, when a command job ends on its own. A command job sends one
+**unless the model already has the answer** — that is, unless `job_stop` ended it, or it ended
+while the model was still waiting for it in the foreground, in which case the tool result of
+section B was the answer.
 
 #### What the model sees
 
@@ -397,11 +480,19 @@ Background command quick failure failed.
 job id: 01a09979-cbb8-7639-87ae-48b1389afa99
 elapsed: 3s
 exit code: 7
-read the command output at: /home/rmng/.pi/agent/jobs/01a09979-cbb8-7639-87ae-48b1389afa99/output
+
+the last of its output:
+Traceback (most recent call last):
+  File "build.py", line 12
+ValueError: no such target
+
+read the whole output at: /home/rmng/.pi/agent/jobs/01a09979-cbb8-7639-87ae-48b1389afa99/output
 </pi-background>
 ```
 
-An `exit reason:` line sits between `exit code:` and the output path when there is one.
+An `exit reason:` line sits between `exit code:` and the blank line when there is one. The body
+under `the last of its output:` is the last 10 lines or 1000 bytes of the output file, whichever is
+shorter, and reads `(no output)` when the command printed nothing.
 
 The message carries **no instruction**. The "end your turn rather than polling" wording exists
 only in the tool description in A.
@@ -475,6 +566,11 @@ extension cannot tell a stuck build from a large one, and the model started the 
 It repeats at every multiple of `expectedSeconds` — `2x`, `3x`, `4x` — **except** that a repeat is
 skipped when one was sent less than five minutes ago. So `expectedSeconds: 1` on a job that runs an
 hour sends one message at one second and then one every five minutes, not 3,600 of them.
+
+**A command that ran in the foreground never sends the `1x` one.** Its `1x` mark is the moment the
+wait ended, and the tool result of section B already said it there. The clock starts at that
+handoff, so the first message of this kind arrives at the `2x` mark — and the five-minute floor
+usually swallows that one too.
 
 #### What you see
 

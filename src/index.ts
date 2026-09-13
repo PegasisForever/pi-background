@@ -246,27 +246,46 @@ export default function (pi: ExtensionAPI) {
 
 	function registerTools(): void {
 		const isolated = config.isolated;
-		pi.registerTool<typeof RunCommandParams, Shown>({
-			name: "run_command",
-			label: "Run command",
+		pi.registerTool<typeof BashParams, Shown>({
+			name: "bash",
+			label: "bash",
 			description:
-				"Start a shell command in the background and return immediately. Give expectedSeconds a " +
-				"number for work you are waiting on: the result is delivered to you automatically when it " +
-				"ends, so end your turn rather than polling or sleeping. Give it null for a service that " +
-				"runs until stopped; you are told if it stops on its own. Nothing is ever killed by the " +
-				"clock — only job_stop ends a job early. It returns a job id, which job_list and job_stop " +
-				"take.",
-			parameters: RunCommandParams,
-			async execute(_id, params, _signal, _onUpdate, toolCtx) {
+				`Run a shell command. A command you expect to take less than ${jobs.FOREGROUND_MAX_SECONDS} ` +
+				"seconds runs while you wait, and returns the end of its output with the exit code. " +
+				"Anything longer, and any service, starts in the background at once and is delivered to " +
+				"you when it ends, so end your turn rather than polling or sleeping. A command that " +
+				"passes your estimate is not stopped: it moves to the background and you are told when " +
+				"it ends, with a job id that job_list and job_stop take. Nothing is ever killed by the " +
+				"clock — only job_stop ends a command early. The whole output is always written to a " +
+				"file whose path you are given; read it when the end is not enough.",
+			promptSnippet: "Run shell commands (ls, grep, find, etc.); a long one moves to the background",
+			parameters: BashParams,
+			async execute(_id, params, signal, _onUpdate, toolCtx) {
 				const cwd = params.cwd ?? toolCtx.cwd;
-				return answer(
-					jobs.start(
-						{ kind: "command", title: params.title, cwd, expectedSeconds: params.expectedSeconds },
-						(j) => runCommand(j, params.command, cwd),
-					),
+				const seconds = params.expectedSeconds;
+				const foreground = seconds !== null && seconds < jobs.FOREGROUND_MAX_SECONDS;
+				const job = jobs.start(
+					{ kind: "command", title: params.title, cwd, expectedSeconds: seconds, foreground },
+					(j) => runCommand(j, params.command, cwd),
 				);
+				if (!foreground) return answer(job);
+
+				const how = await jobs.waitInForeground(job, seconds, signal);
+				// The command can end in the same tick the wait expires, so its status is the authority.
+				if (job.status !== "running") {
+					return {
+						content: [{ type: "text" as const, text: jobs.finished(job) }],
+						details: { lines: jobs.finishedForYou(job) },
+					};
+				}
+				const overran = how === "overran";
+				jobs.detach(job, seconds, overran);
+				return {
+					content: [{ type: "text" as const, text: jobs.handedOff(job, overran) }],
+					details: { lines: jobs.handedOffForYou(job, overran) },
+				};
 			},
-			renderCall: (params, theme) => header(theme, "run_command", params.title),
+			renderCall: (params, theme) => header(theme, "bash", params.title),
 			renderResult: (result, _options, theme) => shown(result, theme),
 		});
 
@@ -457,15 +476,16 @@ export default function (pi: ExtensionAPI) {
 	});
 }
 
-const RunCommandParams = Type.Object({
+const BashParams = Type.Object({
 	command: Type.String({ description: "Shell command" }),
 	title: TitleParam,
 	cwd: Type.Optional(Type.String({ description: "Working directory" })),
 	expectedSeconds: Type.Union([Type.Number({ minimum: 1 }), Type.Null()], {
 		description:
-			"Roughly how long you expect this to take, in seconds. Nothing is killed at that mark: " +
-			"if the command is still running you are told so, and you decide whether to let it " +
-			"continue. Pass null for a service such as a dev server, which you are not waiting on.",
+			"Roughly how long you expect this to take, in seconds. It decides whether you wait for " +
+			"the command or it starts in the background. Nothing is killed at that mark: if the " +
+			"command is still running you are told so, and you decide whether to let it continue. " +
+			"Pass null for a service such as a dev server, which you are not waiting on.",
 	}),
 });
 

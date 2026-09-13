@@ -1,7 +1,7 @@
-import { appendFileSync, closeSync, mkdirSync, openSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { uuidv7 } from "@earendil-works/pi-ai";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, truncateTail } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export type JobKind = "command" | "agent";
@@ -26,6 +26,8 @@ export interface Job {
 	signal: AbortSignal;
 	outputFd: number;
 	settled: Promise<void>;
+	/** The model is waiting on this command's result, so it needs no message when it ends. */
+	foreground: boolean;
 	/** Fires at every multiple of expectedSeconds while the job is still running. */
 	overrun?: NodeJS.Timeout;
 	overrunAt?: number;
@@ -33,6 +35,15 @@ export interface Job {
 
 /** A job that overruns by a second must not report every second. */
 const QUIET_MS = 5 * 60 * 1000;
+
+/** A command you expect to be shorter than this runs while the model waits. */
+export const FOREGROUND_MAX_SECONDS = 180;
+
+/** The end of a command's output, as the model is shown it. */
+const TAIL_LINES = 10;
+const TAIL_BYTES = 1000;
+/** Only the end of the file is read: a build log is large and ten lines are wanted. */
+const TAIL_WINDOW = 64 * 1024;
 
 export interface Outcome {
 	status: Exclude<JobStatus, "running">;
@@ -72,6 +83,8 @@ export interface StartOptions {
 	sandboxId?: string;
 	ssh?: string;
 	sessionOf?: string;
+	/** The caller waits for this command in front of the model. Only `bash` does. */
+	foreground?: boolean;
 }
 
 /** Creates the job and its runner together, so a job can never exist untracked. */
@@ -98,9 +111,11 @@ export function start(options: StartOptions, run: (job: Job) => Promise<Outcome>
 		signal: stop.signal,
 		outputFd: openSync(join(dir, "output"), "a"),
 		settled: promise,
+		foreground: options.foreground ?? false,
 	};
 	jobs.set(id, job);
-	if (options.expectedSeconds !== null) {
+	// A foreground job's clock starts when the wait ends, because that report is the first overrun.
+	if (options.expectedSeconds !== null && !job.foreground) {
 		job.overrun = setInterval(() => reportOverrun(job), options.expectedSeconds * 1000);
 	}
 
@@ -120,6 +135,33 @@ export function start(options: StartOptions, run: (job: Job) => Promise<Outcome>
 	})();
 
 	return job;
+}
+
+export type Wait = "ended" | "overran" | "detached";
+
+/**
+ * The foreground wait: the command ends, the estimate passes, or the human stops waiting.
+ * pi's signal means "stop waiting", never "stop the command" — only job_stop does that.
+ */
+export function waitInForeground(job: Job, seconds: number, signal?: AbortSignal): Promise<Wait> {
+	if (signal?.aborted) return Promise.resolve("detached");
+	const { promise, resolve } = Promise.withResolvers<Wait>();
+	const timer = setTimeout(() => resolve("overran"), seconds * 1000);
+	const detached = () => resolve("detached");
+	signal?.addEventListener("abort", detached);
+	void job.settled.then(() => resolve("ended"));
+	return promise.finally(() => {
+		clearTimeout(timer);
+		signal?.removeEventListener("abort", detached);
+	});
+}
+
+/** The wait is over and the command is still running: it carries on without a waiter. */
+export function detach(job: Job, seconds: number, overran: boolean): void {
+	job.foreground = false;
+	// An overrun was just reported to the model, so the five-minute floor starts from here.
+	if (overran) job.overrunAt = Date.now();
+	job.overrun = setInterval(() => reportOverrun(job), seconds * 1000);
 }
 
 /** An abort outranks whatever the runner reported, which is some flavour of "killed". */
@@ -146,8 +188,8 @@ function finalise(job: Job, outcome: Outcome): void {
 	clearInterval(job.overrun);
 	if (shuttingDown) return;
 	onChange();
-	// A stopped job was stopped by the model, which already has job_stop's answer.
-	if (job.status === "stopped") return;
+	// The model already has the answer: job_stop returned it, or a foreground wait did.
+	if (job.status === "stopped" || job.foreground) return;
 	send(notification(job), notificationForYou(job));
 }
 
@@ -193,7 +235,7 @@ const OUTCOME: Record<Exclude<JobStatus, "running">, string> = {
 
 const noun = (job: Job): string => (job.kind === "command" ? "Command" : "Agent");
 
-/** The result of run_command, run_agent and resume_agent. */
+/** The result of a background start: a service, a long command, or an agent. */
 export function started(job: Job): string {
 	const lines = [
 		job.expectedSeconds === null
@@ -203,6 +245,30 @@ export function started(job: Job): string {
 	];
 	if (job.kind === "command") lines.push(`The command output is piped to: ${outputPath(job)}`);
 	if (job.sandboxId) lines.push(`sandbox: ${job.sandboxId}`);
+	return lines.join("\n");
+}
+
+/** The result of a command that ended while the model waited. It sends no message afterwards. */
+export function finished(job: Job): string {
+	const lines = [tail(job) || "(no output)", "", `exit code: ${job.exitCode ?? "none"}`];
+	if (job.reason) lines.push(`exit reason: ${job.reason}`);
+	lines.push(`elapsed: ${elapsed(job)}`, `The whole output is at: ${outputPath(job)}`);
+	return lines.join("\n");
+}
+
+/** The result of a command the model stopped waiting for. It keeps running. */
+export function handedOff(job: Job, overran: boolean): string {
+	const body = tail(job);
+	const lines = body ? [body, ""] : [];
+	lines.push(
+		overran
+			? `Command ${job.title} is still running after ${elapsed(job)}, longer than the ${job.expectedSeconds}s you expected.`
+			: `Command ${job.title} is still running after ${elapsed(job)}; you stopped waiting for it.`,
+		"It has not been stopped and is now in the background.",
+		`job id: ${job.id}`,
+		`The whole output is collected at: ${outputPath(job)}`,
+		"You will be notified when it ends.",
+	);
 	return lines.join("\n");
 }
 
@@ -260,7 +326,8 @@ export function notification(job: Job): string {
 	if (job.kind === "command") lines.push(`exit code: ${job.exitCode ?? "none"}`);
 	if (job.reason) lines.push(`exit reason: ${job.reason}`);
 	if (job.kind === "command") {
-		lines.push(`read the command output at: ${outputPath(job)}`);
+		lines.push("", "the last of its output:", tail(job) || "(no output)", "");
+		lines.push(`read the whole output at: ${outputPath(job)}`);
 	} else if (size(resultPath(job)) > 0) {
 		lines.push("", `read the agent response at: ${resultPath(job)}`);
 	}
@@ -277,6 +344,20 @@ export function overrun(job: Job): string {
 		"</pi-background>",
 	].join("\n");
 }
+
+/** A foreground command that ended, for a person. */
+export const finishedForYou = (job: Job): string[] => [
+	`Finished in ${elapsed(job)}.`,
+	`Exit code: ${job.exitCode ?? "none"}`,
+];
+
+/** A foreground command that outlived the wait, for a person. */
+export const handedOffForYou = (job: Job, overran: boolean): string[] => [
+	overran
+		? `Still running after ${elapsed(job)}, expected ${job.expectedSeconds}s.`
+		: `Still running after ${elapsed(job)}; you stopped waiting.`,
+	"Now in the background.",
+];
 
 /** The same, for a person. */
 export const overrunForYou = (job: Job): string[] => [
@@ -325,6 +406,24 @@ export function table(): string[] {
 			.join("  ")
 			.trimEnd();
 	return [line(HEADINGS), ...cells.map(line)];
+}
+
+/** The last lines of a command's output: enough to see what happened, never the whole file. */
+export function tail(job: Job): string {
+	const path = outputPath(job);
+	const total = size(path);
+	const from = Math.max(0, total - TAIL_WINDOW);
+	const length = total - from;
+	if (length === 0) return "";
+	const buffer = Buffer.alloc(length);
+	const fd = openSync(path, "r");
+	try {
+		readSync(fd, buffer, 0, length, from);
+	} finally {
+		closeSync(fd);
+	}
+	const cut = truncateTail(buffer.toString("utf8"), { maxLines: TAIL_LINES, maxBytes: TAIL_BYTES });
+	return cut.content.trim();
 }
 
 const size = (path: string): number => {
