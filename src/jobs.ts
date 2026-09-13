@@ -149,13 +149,24 @@ export async function shutdown(): Promise<void> {
 	jobs.clear();
 }
 
+export function elapsed(job: Job): string {
+	const s = Math.round(((job.endedAt ?? Date.now()) - job.startedAt) / 1000);
+	if (s < 60) return `${s}s`;
+	if (s < 3600) return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
+	return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
+}
+
+/** One line per job, for a person reading /jobs. No id: they are not the one calling job_stop. */
+export const summarise = (job: Job): string =>
+	`${(job.kind === "command" ? "cmd" : "agent").padEnd(5)} ${elapsed(job).padStart(6)}  ${job.label}` +
+	(job.sandboxId ? `  · ${job.sandboxId}` : "");
+
 export function describe(job: Job): string {
 	const outcome =
 		job.status === "running" ? "running" : `${job.status}${job.reason ? `: ${job.reason}` : ""}`;
-	const elapsed = Math.round(((job.endedAt ?? Date.now()) - job.startedAt) / 1000);
 	const sandbox = job.sandboxId ? `\nsandbox: ${job.sandboxId}` : "";
 	const result = job.kind === "agent" ? `\nresult: ${join(job.dir, "result")}` : "";
-	return `${job.id}  [${outcome}]  ${elapsed}s\nran: ${job.label}\noutput: ${join(job.dir, "output")}${result}${sandbox}`;
+	return `${job.id}  [${outcome}]  ${elapsed(job)}\nran: ${job.label}\noutput: ${join(job.dir, "output")}${result}${sandbox}`;
 }
 
 const text = (err: unknown): string => (err instanceof Error ? err.message : String(err));

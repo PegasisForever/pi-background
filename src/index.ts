@@ -192,7 +192,7 @@ export default function (pi: ExtensionAPI) {
 		handler: async () => {
 			const live = jobs.running();
 			pi.appendEntry("pi-jobs-listing", {
-				lines: live.length === 0 ? ["No jobs running."] : live.map((j) => jobs.describe(j)),
+				lines: live.length === 0 ? ["No jobs running."] : live.map((j) => jobs.summarise(j)),
 			});
 		},
 	});
@@ -219,7 +219,7 @@ export default function (pi: ExtensionAPI) {
 			async execute(_id, params, _signal, _onUpdate, toolCtx) {
 				const cwd = params.cwd ?? toolCtx.cwd;
 				const job = jobs.start(
-					{ kind: "command", label: params.command, cwd, timeoutSeconds: params.timeoutSeconds },
+					{ kind: "command", label: firstLine(params.command), cwd, timeoutSeconds: params.timeoutSeconds },
 					(j) => runCommand(j, params.command, cwd),
 				);
 				return { content: [{ type: "text", text: jobs.describe(job) }], details: {} };

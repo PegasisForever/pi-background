@@ -118,8 +118,17 @@ A widget under the editor counts what is live, and hides when nothing is:
 2 commands, 1 subagent
 ```
 
-`/jobs` lists them in full — id, status, elapsed, paths — as a durable entry. Both read the same
-`running()` view the tools do.
+`/jobs` lists them one line each, as a durable entry:
+
+```
+cmd    3m58s  sleep 400
+agent  1h10m  Review the auth diff and report file:line findings.  · sb-4998-30927
+```
+
+No id and no status: a listed job is running by definition, and you are not the one calling
+`job_stop` — the model is, and it has the id from the tool result. Both surfaces read the same
+`running()` view the tools do, but they format for different readers: `describe()` gives the model
+ids and paths, `summarise()` gives you density.
 
 Neither reaches the model. A widget is UI, and `appendEntry` writes a `custom` session entry,
 which pi keeps out of LLM context by design — unlike `sendMessage`, which is how a job completion
