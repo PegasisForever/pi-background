@@ -574,7 +574,7 @@ mid-promise again is the case the feature exists for. Nothing distinguishes 5 fr
 ```js
 const rt = await ModelRuntime.create();          // 54 ms, once per session, lazily
 const reply = await rt.completeSimple(model, { systemPrompt, messages }, {
-  reasoning: nudgeThinking, cacheRetention: "none", maxTokens: 2048,
+  reasoning: nudge.effort, cacheRetention: "none", maxTokens: 2048,
 });
 ```
 
@@ -605,7 +605,7 @@ The prompt names whose action counts: only one the assistant said **it** would t
 ends by telling the user what to do next is not an unkept promise, and nudging on it restarts a
 session that was correctly waiting for a person.
 
-**`nudgeThinking` is not a quality dial.** Measured on `google/gemini-3.8-flash`: omitting
+**`nudge.effort` is not a quality dial.** Measured on `google/gemini-3.8-flash`: omitting
 `reasoning` returns an empty assistant message in 288 ms, three times out of three; `high` returns
 a correct answer. Which levels a model honours varies, so the level must be stated.
 
@@ -627,8 +627,9 @@ configuration is fixed, which is the loud stop C7 asks for. A
 feature that silently switches itself off and stays off is the quiet degradation C7 exists to
 prevent.
 
-`nudgeModel` and `nudgeThinking` are both required or both absent; one without the other is a
-startup error.
+`nudge` is one object with two required fields, so "a model with no effort" is unrepresentable
+rather than checked for. It replaced a flat `nudgeModel` / `nudgeThinking` pair and the extra rule
+that kept them in step; the rule is gone because the state it guarded against cannot be written.
 
 The nudge text is an ordinary user message and stays in the transcript.
 
@@ -697,10 +698,10 @@ built, and needing no forwarding rules to survive an `ssh` hop.
   // none. Absent means 1. It bounds the height of the tree, not the number of sessions (§12).
   "maxDepth": 1,
 
-  // Classifier for the nudge. "<provider>/<modelId>", split on the first "/".
-  // Absent means the nudge is off. Required together with nudgeThinking.
-  "nudgeModel": "openai-codex/gpt-5.6-luna",
-  "nudgeThinking": "low",
+  // Classifier for the nudge. Absent means the nudge is off. One object, so a model without
+  // an effort is unrepresentable rather than checked for: both fields are required inside it.
+  // "model" is "<provider>/<modelId>", split on the first "/".
+  "nudge": { "model": "openai-codex/gpt-5.6-luna", "effort": "low" },
 
   // Provider for isolated subagents. Absent means isolation: "isolated" is refused when used.
   "isolated": {
@@ -728,7 +729,7 @@ Read once, at `session_start`. `/reload` re-runs `session_start`, so `/reload` p
 There is no file watcher.
 
 The merged object is validated against one typebox schema, so an unknown key at any depth, a
-wrong type and an illegal `nudgeThinking` value are all loud failures. A malformed or unreadable
+wrong type and an illegal `nudge.effort` value are all loud failures. A malformed or unreadable
 file is one too: no default, no partial load. The unknown key is found **before** the schema
 runs, because a schema checker reports only "must not have additional properties" and never names
 the key, and the key's name is the one thing a typo needs. **No file at all is not a failure** —

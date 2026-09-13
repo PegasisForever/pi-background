@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { contentText } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CONFIG_DIR_NAME, getAgentDir, getShellConfig, ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { Static } from "typebox";
+import type { Static, TObject } from "typebox";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Sandbox } from "./agent-job.ts";
@@ -30,16 +30,22 @@ const NUDGE_PROMPT =
 const ConfigSchema = Type.Object(
 	{
 		maxDepth: Type.Optional(Type.Integer({ minimum: 1 })),
-		nudgeModel: Type.Optional(Type.String({ pattern: "^[^/]+/.+$" })),
-		nudgeThinking: Type.Optional(
-			Type.Union([
-				Type.Literal("minimal"),
-				Type.Literal("low"),
-				Type.Literal("medium"),
-				Type.Literal("high"),
-				Type.Literal("xhigh"),
-				Type.Literal("max"),
-			]),
+		// One object, so "a model with no effort" is unrepresentable rather than checked for.
+		nudge: Type.Optional(
+			Type.Object(
+				{
+					model: Type.String({ pattern: "^[^/]+/.+$" }),
+					effort: Type.Union([
+						Type.Literal("minimal"),
+						Type.Literal("low"),
+						Type.Literal("medium"),
+						Type.Literal("high"),
+						Type.Literal("xhigh"),
+						Type.Literal("max"),
+					]),
+				},
+				{ additionalProperties: false },
+			),
 		),
 		isolated: Type.Optional(
 			Type.Object(
@@ -77,9 +83,6 @@ function readConfig(cwd: string): Config {
 	}
 	const wrong = problem(merged);
 	if (wrong !== undefined) throw new Error(`${sources.join(" + ")}: "${NAME}": ${wrong}`);
-	if ((merged.nudgeModel === undefined) !== (merged.nudgeThinking === undefined)) {
-		throw new Error(`settings.json: "${NAME}": nudgeModel and nudgeThinking must be set together`);
-	}
 	return merged;
 }
 
@@ -95,12 +98,11 @@ function section(path: string, settings: Record<string, unknown>): Record<string
 /**
  * What is wrong with a config file, in one sentence, or undefined when nothing is (C7). A schema
  * checker on its own says "must not have additional properties" and never names the key, which is
- * the one thing you need to fix a typo, so the unknown key is found here instead.
+ * the one thing you need to fix a typo, so missing and unknown keys are found here instead.
  */
 function problem(value: Record<string, unknown>): string | undefined {
-	const allowed = Object.keys(ConfigSchema.properties);
-	const unknown = Object.keys(value).find((key) => !allowed.includes(key));
-	if (unknown !== undefined) return `unknown key "${unknown}". The keys are ${allowed.join(", ")}.`;
+	const named = keyProblem(ConfigSchema, value, []);
+	if (named !== undefined) return named;
 	const error = [...Value.Errors(ConfigSchema, value)][0];
 	if (error === undefined) return undefined;
 	const path = error.instancePath.split("/").filter((step) => step !== "");
@@ -108,6 +110,26 @@ function problem(value: Record<string, unknown>): string | undefined {
 	let at: unknown = value;
 	for (const step of path) at = (at as Record<string, unknown> | undefined)?.[step];
 	return `"${path.join(".")}" is ${JSON.stringify(at)}, which that key does not take.`;
+}
+
+/** Unknown and missing keys, by name, at every level of the schema — `nudge` and `isolated` are
+ * objects too, and "nudge is {...}, which that key does not take" does not say what is wrong. */
+function keyProblem(schema: TObject, value: unknown, at: string[]): string | undefined {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const record = value as Record<string, unknown>;
+	const where = at.length === 0 ? "" : `"${at.join(".")}": `;
+	const allowed = Object.keys(schema.properties);
+	const unknown = Object.keys(record).find((key) => !allowed.includes(key));
+	if (unknown !== undefined) return `${where}unknown key "${unknown}". The keys are ${allowed.join(", ")}.`;
+	const missing = (schema.required ?? []).find((key) => record[key] === undefined);
+	if (missing !== undefined) return `${where}"${missing}" is required.`;
+	for (const [key, child] of Object.entries(schema.properties)) {
+		const nested = child as TObject;
+		if (nested.type !== "object") continue;
+		const deeper = keyProblem(nested, record[key], [...at, key]);
+		if (deeper !== undefined) return deeper;
+	}
+	return undefined;
 }
 
 function parse(path: string, text: string): Record<string, unknown> {
@@ -182,11 +204,11 @@ export default function (pi: ExtensionAPI) {
 		renameSync(`${statePath}.tmp`, statePath);
 	}
 
-	async function classify(text: string): Promise<string> {
+	async function classify(nudge: NonNullable<Config["nudge"]>, text: string): Promise<string> {
 		runtime ??= await ModelRuntime.create();
-		const [provider, ...rest] = config.nudgeModel!.split("/");
+		const [provider, ...rest] = nudge.model.split("/");
 		const model = runtime.getModel(provider as string, rest.join("/"));
-		if (!model) throw new Error(`nudgeModel not found: ${config.nudgeModel}`);
+		if (!model) throw new Error(`nudge.model not found: ${nudge.model}`);
 		const reply = await runtime.completeSimple(
 			model,
 			{
@@ -194,7 +216,7 @@ export default function (pi: ExtensionAPI) {
 				messages: [{ role: "user", content: [{ type: "text", text }], timestamp: Date.now() }],
 			},
 			{
-				reasoning: config.nudgeThinking,
+				reasoning: nudge.effort,
 				cacheRetention: "none",
 				maxTokens: CLASSIFIER_MAX_TOKENS,
 				signal: AbortSignal.timeout(CLASSIFIER_TIMEOUT_MS),
@@ -207,14 +229,14 @@ export default function (pi: ExtensionAPI) {
 		const answer = contentText(reply.content, "").trim();
 		if (answer === "") {
 			throw new Error(
-				`nudge classifier produced no text: ${config.nudgeModel} at thinking "${config.nudgeThinking}" within ${CLASSIFIER_MAX_TOKENS} tokens`,
+				`nudge classifier produced no text: ${nudge.model} at effort "${nudge.effort}" within ${CLASSIFIER_MAX_TOKENS} tokens`,
 			);
 		}
 		return answer === "NO" ? "" : answer;
 	}
 
 	async function nudge(ctx: ExtensionContext): Promise<void> {
-		if (isChild || !config.nudgeModel) return;
+		if (isChild || !config.nudge) return;
 		if (nudgesThisTurn >= MAX_NUDGES_PER_TURN || jobs.activeCount() > 0) return;
 		const leaf = ctx.sessionManager.getLeafEntry();
 		const msg = leaf?.type === "message" ? leaf.message : undefined;
@@ -223,7 +245,7 @@ export default function (pi: ExtensionAPI) {
 		const text = contentText(msg.content, "").trim();
 		if (!text) return;
 
-		const action = await classify(text);
+		const action = await classify(config.nudge, text);
 		if (action === "") return;
 		nudgesThisTurn += 1;
 		pi.sendUserMessage(`You said you would ${action}, but did not. Continue.`);

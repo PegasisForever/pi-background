@@ -607,7 +607,7 @@ counter resets on the next input that did not come from this extension.
 The classifier's phrasing lands mid-sentence, so its capital letter and its full stop both stay in
 place, as above. Nothing trims or re-cases it.
 
-A nudge is sent only when: the session is not itself a subagent, `nudgeModel` is configured, fewer
+A nudge is sent only when: the session is not itself a subagent, `nudge` is configured, fewer
 than five nudges have been sent this turn, **no awaited job is running**, the last entry is an
 assistant message that did not end in an error or an abort, its text is non-empty, and the
 classifier replied with something other than `NO`.
@@ -624,7 +624,7 @@ as machine-written.
 
 ## D. The nudge classifier's prompt
 
-Sent to `nudgeModel`. **Neither the session model nor you ever sees it.**
+Sent to `nudge.model`. **Neither the session model nor you ever sees it.**
 
 System prompt:
 
@@ -695,16 +695,17 @@ Thrown or logged outside a tool call, so pi shows them as an extension error or 
 
 | Where | Text |
 |---|---|
-| load | `<file> + <file>: "pi-background": unknown key "<key>". The keys are maxDepth, nudgeModel, nudgeThinking, isolated.` |
+| load | `<file> + <file>: "pi-background": unknown key "<key>". The keys are maxDepth, nudge, isolated.` |
+| load | `<file> + <file>: "pi-background": "<object>": unknown key "<key>". The keys are <keys>.` |
+| load | `<file> + <file>: "pi-background": "<object>": "<key>" is required.` |
 | load | `<file> + <file>: "pi-background": "<key>" is <value>, which that key does not take.` |
 | load | `<file> is not valid JSON: <parser message>` |
 | load | `<file>: "pi-background" must be a JSON object.` |
-| load | `settings.json: "pi-background": nudgeModel and nudgeThinking must be set together` |
 | `session_start` | `pi-background: --jobs-depth must be a whole number, got "<value>"` |
 | startup | `pi-background: could not read starttime from /proc/self/stat` |
-| `agent_settled` | `nudgeModel not found: <model>` |
+| `agent_settled` | `nudge.model not found: <model>` |
 | `agent_settled` | `nudge classifier failed: <provider error>` |
-| `agent_settled` | `nudge classifier produced no text: <model> at thinking "<level>" within 2048 tokens` |
+| `agent_settled` | `nudge classifier produced no text: <model> at effort "<level>" within 2048 tokens` |
 
 The three `agent_settled` ones recur at every turn end until the configuration is fixed. That is
 deliberate: there is no latch, so a broken classifier cannot go quiet.

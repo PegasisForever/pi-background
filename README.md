@@ -87,9 +87,8 @@ there is one file to edit, not one per extension. Two of them, shallow-merged, p
   // How deep a chain of subagents may go. Absent means 1.
   "maxDepth": 1,
 
-  // Classifier for the nudge. Absent means the nudge is off. Both keys or neither.
-  "nudgeModel": "openai-codex/gpt-5.6-luna",
-  "nudgeThinking": "low",
+  // Classifier for the nudge. Absent means the nudge is off; present means both fields.
+  "nudge": { "model": "openai-codex/gpt-5.6-luna", "effort": "low" },
 
   // Sandbox provider. Absent means isolation: "isolated" is refused when it is used.
   "isolated": {
