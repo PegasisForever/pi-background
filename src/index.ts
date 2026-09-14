@@ -22,10 +22,12 @@ const MAX_NUDGES_PER_TURN = 5;
 /** A classification was measured at 1.8 s; this only has to bound a stalled connection. */
 const CLASSIFIER_TIMEOUT_MS = 60_000;
 const NUDGE_PROMPT =
-	"Below is an assistant message that ended a turn. If it promised a next action that it is " +
-	"going to do (only includes next actions the assistant is going to do, not include the next " +
-	"action it says the user is going to do), reply with that action in at most 15 words. " +
-	"Otherwise reply with exactly: NO";
+	"Below is an assistant message that ended a turn. If the assistant stated it will do something " +
+	"next itself, reply with that action in at most 15 words. A stated decision counts, such as 'I " +
+	"will', 'I will now', 'Let me', 'I am going to'. Otherwise reply with exactly: NO. A question, a " +
+	"request for permission or confirmation, a conditional offer such as 'if you want', 'should I', " +
+	"'I can', or 'tell me if', or an action it says the user will do is not a decision. When in " +
+	"doubt, reply NO.";
 
 const ConfigSchema = Type.Object(
 	{
@@ -287,7 +289,11 @@ export default function (pi: ExtensionAPI) {
 				`nudge classifier produced no text: ${nudge.model} at effort "${nudge.effort}" within ${CLASSIFIER_MAX_TOKENS} tokens`,
 			);
 		}
-		return answer === "NO" ? "" : answer;
+		// The classifier is told to answer exactly NO, but cheap models add a full stop or
+		// change the case, and either variant sent as a nudge reads "You said you would NO." —
+		// so the check is the verdict with trailing stops removed, case folded.
+		const verdict = answer.replace(/[.\s]+$/g, "").toUpperCase();
+		return verdict === "NO" ? "" : answer;
 	}
 
 	async function nudge(ctx: ExtensionContext): Promise<void> {

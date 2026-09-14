@@ -671,9 +671,22 @@ API-specific; the provider-neutral `reasoning` exists only on `completeSimple`.
 The only message is the last assistant text. The reply is either `NO` or the unfinished action in
 a few words, and the nudge quotes that action back rather than saying "continue".
 
-The prompt names whose action counts: only one the assistant said **it** would take. A turn that
-ends by telling the user what to do next is not an unkept promise, and nudging on it restarts a
-session that was correctly waiting for a person.
+The prompt names what counts as a promise, in both directions. A stated decision counts, with
+its shapes given (`I will`, `I will now`, `Let me`, `I am going to`): bare promises were
+answered NO. A question, a request for permission or confirmation, a conditional offer (`if you
+want`, `should I`, `I can`, `tell me if`), and an action the user is told to take are not
+decisions, and doubt defaults to NO. The conditional-offer shapes exist because of a real
+misfire: an assistant message ending *Tell me if you want me to unify the two Dockerfiles …*
+was read as a promise to unify them, and the session was nudged for work it had correctly left
+to the user. A turn that ends by asking the user something is correctly waiting for a person,
+and nudging on it restarts a session that was right to stop.
+
+Measured on `google/gemini-3.5-flash-lite` with a six-message probe (one conditional offer, one
+user-directed action, one question-offer, three plain promises): at `minimal` effort the old
+prompt fired on the conditional offer and missed all three promises, and the new prompt answers
+NO to everything, promises included — `minimal` cannot follow the prompt either way. At `low`
+both prompts score 6/6, with the new prompt's exclusions as the guard against the next
+conditional-offer shape. The effort level is doing as much work as the wording.
 
 **`nudge.effort` is not a quality dial.** Measured on `google/gemini-3.8-flash`: omitting
 `reasoning` returns an empty assistant message in 288 ms, three times out of three; `high` returns

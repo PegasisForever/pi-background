@@ -741,16 +741,23 @@ Sent to `nudge.model`. **Neither the session model nor you ever sees it.**
 
 System prompt:
 
-> Below is an assistant message that ended a turn. If it promised a next action that it is going to do (only includes next actions the assistant is going to do, not include the next action it says the user is going to do), reply with that action in at most 15 words. Otherwise reply with exactly: NO
+> Below is an assistant message that ended a turn. If the assistant stated it will do something next itself, reply with that action in at most 15 words. A stated decision counts, such as 'I will', 'I will now', 'Let me', 'I am going to'. Otherwise reply with exactly: NO. A question, a request for permission or confirmation, a conditional offer such as 'if you want', 'should I', 'I can', or 'tell me if', or an action it says the user will do is not a decision. When in doubt, reply NO.
 
-The parenthesis exists because the classifier used to fire on an assistant message that ended by
-telling the user what to do next. That is not an unkept promise.
+The decision patterns exist because the classifier fired on an assistant message that ended by
+asking the user for permission: *Tell me if you want me to unify the two Dockerfiles …* was
+read as a promise to unify them, and the session got *You said you would Unify the two
+Dockerfiles …* for work it had correctly left to the user. A question or offer waiting on the
+user is not a promise, so the prompt names those shapes and defaults to NO. The positive
+patterns exist for the opposite miss: bare *I will …* and *Let me …* promises were answered NO.
+Both directions were measured on the configured classifier, not guessed.
 
 The single user message is the last assistant message's text, with nothing added — no framing, no
 session context, no tool history.
 
-Its reply is read as: empty → throw; `NO` (any case) → no nudge; anything else → the action, which
-then reaches both readers as the nudge in C.
+Its reply is read as: empty → throw; `NO` in any case, with trailing full stops ignored → no
+nudge; anything else → the action, which then reaches both readers as the nudge in C. The
+tolerance exists because the classifier answers `NO.` as often as `NO`, and the exact check used
+to send *You said you would NO., but did not. Continue.*
 
 ---
 
