@@ -720,7 +720,7 @@ counter resets on the next input that did not come from this extension.
 The classifier's phrasing lands mid-sentence, so its capital letter and its full stop both stay in
 place, as above. Nothing trims or re-cases it.
 
-A nudge is sent only when: the session is not itself a subagent, `nudge` is configured, fewer
+A nudge is sent only when: `nudge` is configured, fewer
 than five nudges have been sent this turn, **no awaited job is running**, the last entry is an
 assistant message that did not end in an error or an abort, its text is non-empty, and the
 classifier replied with something other than `NO`.

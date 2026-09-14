@@ -367,7 +367,7 @@ config; reading `maxDepth` there would let a child grant itself more depth than 
 allowed. The resolved limit travels, not the policy.
 
 **The flag also answers "am I a child?"**: in a child session the remaining depth comes from the
-flag rather than config, and the nudge is off, because the parent already sees the child finish.
+flag rather than config.
 
 ---
 
@@ -515,6 +515,28 @@ stay correct across a suppressed window.
 One function sets the job's `status`, `exitCode` and `reason`, closes the output file, clears the
 overrun interval, sends the notification, and refreshes the activity file. There is no second place
 that decides whether a job succeeded, and no second place that can leave a timer running.
+
+### §5.4 The headless drain
+
+In `print` (`-p`) and `json` modes the host exits as soon as the first prompt settles, and
+`session_shutdown` (§5.1) would abort whatever is still running. So the `agent_settled` handler
+waits first: while the session is not quiescent — host idle, nothing queued, no awaited job
+running — it waits on the awaited jobs' `settled` promises raced against a wakeup that fires on
+every transition that can end quiescence (a turn starting or ending, a job starting or settling).
+The host awaits the handler before `prompt()` resolves, so the wait holds the process open and
+every completion reports through the normal notification path (§6) instead of dying in shutdown.
+A subagent child runs the same code, so a tree of them drains bottom-up with no new protocol.
+
+There is no timer in the loop and no stability counter: each side of the race resolves on a real
+transition, which is what makes the wait exact rather than tuned (C10). `Promise.all([])`
+resolves at once, so an empty awaited list waits on the wakeup alone — racing it bare would spin
+while a notification turn runs.
+
+Services are not drained: a service never finishes, so waiting for one would wait forever. They
+are still aborted at shutdown, and in headless mode each one gets one `stderr` line, because
+there is no footer and no transcript entry to record it anywhere else (C7). What ends the wait
+is quiescence or teardown: if shutdown wins the race the handler stays quiet instead of nudging
+into a session that is going away.
 
 ---
 
@@ -697,6 +719,11 @@ One predicate, refreshed from one function that five call sites hit — `session
 ```
 active = !ctx.isIdle() || awaitedJobsRunning > 0
 ```
+
+The drain (§5.4), this file and the nudge guard (§7.1) all read the same predicate, so the
+three cannot disagree about what settled means. In headless mode `agent_settled` arrives only
+after the drain, which is why `active` spans the whole background-work duration there rather
+than the first prompt-response.
 
 `ctx.isIdle()` is pi's own answer, measured across the lifecycle as `true` at `session_start`,
 `false` in `agent_start` and `true` in `agent_settled` — so there is no turn flag of ours to keep
@@ -909,6 +936,15 @@ Written down so that when one bites, the real shape is handled rather than the i
 16. **A command that hides its output until the end reports nothing at the handoff.** The last
     lines come from the `output` file, so a command that buffers — many do when their stdout is
     not a terminal — hands off with an empty body and the model sees only the path.
+17. **The headless drain holds up later extensions.** `agent_settled` handlers run sequentially
+    in registration order, and in `print`/`json` mode ours does not return until awaited jobs
+    settle — so every extension after it waits that long for its own `agent_settled`.
+18. **The headless drain has no timeout.** A wedged awaited job stalls `pi -p` indefinitely,
+    in the child as well as the root. The only outward signal is the five-minute overrun
+    message; there is no automatic stop, by §12.3 and C10.
+19. **A service aborted at shutdown leaves almost no record.** In headless mode one `stderr`
+    line names it; otherwise the job directory on disk is all that is left — no transcript
+    entry, no notification.
 
 
 ---

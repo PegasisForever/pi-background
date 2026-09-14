@@ -173,6 +173,18 @@ export default function (pi: ExtensionAPI) {
 	let isChild = false;
 	let nudgesThisTurn = 0;
 	let runtime: ModelRuntime | undefined;
+	/** True while `drainIfHeadless` is waiting out background work (headless only, §5.4). */
+	let draining = false;
+	/** Set at the top of `session_shutdown`; the drain checks it before running dependents. */
+	let sessionEnding = false;
+	/** Resolved by `poke` on every transition that can end quiescence; re-armed each time. */
+	let woken: Promise<void> = Promise.resolve();
+	let wake: () => void = () => {};
+	const poke = (): void => {
+		const w = wake;
+		woken = new Promise<void>((resolve) => (wake = resolve));
+		w();
+	};
 	const statePath = join(STATE_DIR, `${process.pid}.json`);
 	const started = procStart();
 
@@ -198,10 +210,53 @@ export default function (pi: ExtensionAPI) {
 			procStart: started,
 			sessionId: ctx.sessionManager.getSessionId(),
 			cwd: ctx.cwd,
-			status: !ctx.isIdle() || jobs.activeCount() > 0 ? "active" : "idle",
+			status: isQuiescent(ctx) ? "idle" : "active",
 		});
 		writeFileSync(`${statePath}.tmp`, body);
 		renameSync(`${statePath}.tmp`, statePath);
+	}
+
+	/**
+	 * The extension's own settled: the host is idle, nothing is queued, and no awaited job is
+	 * running. Services are excluded by design — a service never finishes, so waiting for one
+	 * would wait forever (§1, §8). One predicate for the drain, the activity file and the
+	 * nudge guard, so the three cannot disagree about what settled means.
+	 */
+	const isQuiescent = (ctx: ExtensionContext): boolean =>
+		ctx.isIdle() && !ctx.hasPendingMessages() && jobs.activeCount() === 0;
+
+	const isHeadless = (ctx: ExtensionContext): boolean => ctx.mode === "print" || ctx.mode === "json";
+
+	/**
+	 * Headless drain (§5.4). In `print`/`json` mode the host would otherwise exit as soon as the
+	 * first prompt settles and `session_shutdown` would abort still-running jobs. Waiting here —
+	 * inside `agent_settled`, which the host awaits before `prompt()` resolves — holds the
+	 * process open until every awaited job has reported through the normal notification path.
+	 * Event-driven, no timers: each side of the race resolves on a real transition (a job
+	 * settling, or `poke()` on a turn or registry change), so there is no sleep to tune and no
+	 * stability counter (C10). The empty-list branch matters: `Promise.all([])` resolves at
+	 * once, and racing it bare would spin while a notification turn runs.
+	 */
+	async function drainIfHeadless(ctx: ExtensionContext): Promise<void> {
+		if (!isHeadless(ctx) || draining) return;
+		if (jobs.activeCount() === 0) return;
+		draining = true;
+		// Past pokes are already reflected in the synchronous state above; only future
+		// transitions may wake the loop, or the first iteration would spin on this.
+		woken = new Promise<void>((resolve) => (wake = resolve));
+		try {
+			for (;;) {
+				if (isQuiescent(ctx)) return;
+				const awaited = jobs.backgrounded().filter((j) => j.expectedSeconds !== null);
+				if (awaited.length > 0) {
+					await Promise.race([Promise.all(awaited.map((j) => j.settled)), woken]);
+				} else {
+					await woken;
+				}
+			}
+		} finally {
+			draining = false;
+		}
 	}
 
 	async function classify(nudge: NonNullable<Config["nudge"]>, text: string): Promise<string> {
@@ -236,7 +291,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function nudge(ctx: ExtensionContext): Promise<void> {
-		if (isChild || !config.nudge) return;
+		if (!config.nudge) return;
 		if (nudgesThisTurn >= MAX_NUDGES_PER_TURN || jobs.activeCount() > 0) return;
 		const leaf = ctx.sessionManager.getLeafEntry();
 		const msg = leaf?.type === "message" ? leaf.message : undefined;
@@ -520,23 +575,53 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		mkdirSync(STATE_DIR, { recursive: true });
-		jobs.init(pi, () => refreshActivity(ctx));
+		// pi caches the extension module process-wide (see jobs.init), so per-session flags
+		// are reset here, not declared fresh.
+		sessionEnding = false;
+		jobs.init(pi, () => {
+			refreshActivity(ctx);
+			poke();
+		});
 		refreshActivity(ctx);
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		sessionEnding = true;
 		ctx.ui.setStatus(jobs.NAME, undefined);
+		const services =
+			ctx.mode === "print" || ctx.mode === "json"
+				? jobs.backgrounded().filter((j) => j.expectedSeconds === null)
+				: [];
 		await jobs.shutdown();
+		// Services never drain (§5.4), so in headless mode this is their only record: no
+		// transcript entry, no notification, only the job directory. Say so loudly (C7).
+		// TUI stays quiet — the footer teardown is the record there, and stderr would land
+		// on the live screen.
+		for (const service of services) {
+			console.error(`[${jobs.NAME}] Service "${service.title}" (${service.id}) stopped at shutdown.`);
+		}
 		rmSync(statePath, { force: true });
 	});
 
-	pi.on("agent_start", async (_event, ctx) => refreshActivity(ctx));
+	pi.on("agent_start", async (_event, ctx) => {
+		refreshActivity(ctx);
+		poke();
+	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
 		try {
+			// In headless mode this holds the session open until background work reports;
+			// afterwards settled means what §8 says it means, and the nudge can rely on it.
+			// Re-entrant while draining (nested notification turns settle too): the outer loop
+			// re-checks, so nested calls must neither drain again nor nudge mid-drain.
+			await drainIfHeadless(ctx);
+			// Teardown won the race (a signal during the drain): stay quiet, the session
+			// is going away and a nudge would send a user message into it.
+			if (sessionEnding || draining) return;
 			await nudge(ctx);
 		} finally {
 			refreshActivity(ctx);
+			poke();
 		}
 	});
 
