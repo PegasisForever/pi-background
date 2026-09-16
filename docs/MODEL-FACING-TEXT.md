@@ -358,18 +358,19 @@ Expected: 120s
 
 #### Errors
 
-Five. Three come from the sandbox provider; two are the refusals that replaced withholding the
+Six. Three come from the sandbox provider; three are the refusals that replaced withholding the
 tool.
 
 | # | Message | Raised when |
 |---|---|---|
 | 1 | `This session has no subagent depth left, so it cannot start one. Do the work here.` | the session is a subagent at the configured depth |
-| 2 | `No sandbox provider is configured, so isolation "isolated" cannot be used. Set "isolated" in settings.json, or leave isolation out and the subagent runs here.` | `isolation: "isolated"` with no `isolated` in the config |
-| 3 | `isolated.create failed: <stderr, trimmed>` | the configured `isolated.create` command exits non-zero |
-| 4 | `isolated.create must print {id, ssh, cwd}: <stdout, trimmed>` | its output parses as JSON but is missing `id`, `ssh` or `cwd` |
-| 5 | `isolated.create ssh must start with ssh: <the ssh value>` | its `ssh` field's first word is not `ssh` |
+| 2 | `This session has no model, so it cannot start a subagent on the same one.` | the session reports no model — a state a live tool call should not reach |
+| 3 | `No sandbox provider is configured, so isolation "isolated" cannot be used. Set "isolated" in settings.json, or leave isolation out and the subagent runs here.` | `isolation: "isolated"` with no `isolated` in the config |
+| 4 | `isolated.create failed: <stderr, trimmed>` | the configured `isolated.create` command exits non-zero |
+| 5 | `isolated.create must print {id, ssh, cwd}: <stdout, trimmed>` | its output parses as JSON but is missing `id`, `ssh` or `cwd` |
+| 6 | `isolated.create ssh must start with ssh: <the ssh value>` | its `ssh` field's first word is not `ssh` |
 
-Rows 3 to 5 are reachable only when `isolated` is configured. If `isolated.create` prints something
+Rows 4 to 6 are reachable only when `isolated` is configured. If `isolated.create` prints something
 that is not JSON at all, both readers instead see the raw `JSON.parse` message from the runtime,
 for example `Unexpected token o in JSON at position 1`.
 
@@ -397,6 +398,8 @@ Expected: 120s
 
 | Message | Raised when |
 |---|---|
+| `This session has no subagent depth left, so it cannot start one. Do the work here.` | the session is a subagent at the configured depth |
+| `This session has no model, so it cannot start a subagent on the same one.` | the session reports no model — a state a live tool call should not reach |
 | `no such job: <id>` | `jobId` names an id this session has no job for |
 | `job <id> is not a subagent` | `jobId` names a shell command |
 | `job <id> is still running; stop it or wait for it` | the job has not finished |

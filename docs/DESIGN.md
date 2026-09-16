@@ -247,6 +247,10 @@ There is no `job_release`. Destroying a sandbox is one shell command, named in
 ### §3.1 Transport
 
 `pi --mode json`. The child streams JSON-line events on stdout and exits when the run is over.
+It also gets `--provider` and `--model` for the model the parent session is running on, and
+`--thinking` for its level, so a subagent works on the model you chose rather than whatever the
+child would pick as its startup default. No model in the session means no flags, and the child
+falls back to that default as any fresh pi run does.
 
 ```js
 local     spawn(process.execPath, [piCli, "--mode","json", `--jobs-depth=${n-1}`, ...], { signal })
@@ -299,6 +303,11 @@ The child is not given `--no-extensions`. It loads what any pi loads, including 
 
 No `--tools`, no allowlist, no agent file, no role, no system-prompt injection. The parent writes
 the whole task. The child's own registry is the authority on what it can do.
+
+The model is the one thing the parent hands down (§3.1), and it is not a decision of the parent's
+own: it is read from the session (C5), so the child runs on the model the user chose for this
+conversation. A session with no model has nothing to hand down and refuses the call (C10) rather
+than starting a child on some other model.
 
 ### §3.4 Files
 
@@ -958,6 +967,12 @@ Written down so that when one bites, the real shape is handled rather than the i
 19. **A service aborted at shutdown leaves almost no record.** In headless mode one `stderr`
     line names it; otherwise the job directory on disk is all that is left — no transcript
     entry, no notification.
+20. **A subagent runs on the session's model, and the host must serve it.** The child is named
+    `--provider`/`--model` for the model the parent is running, which the child resolves against
+    its own catalogue and its own authentication — a sandbox without either fails the child at
+    startup, loudly: pi prints the resolution error and exits 1, and the job reports `failed`.
+    It does not fall back to some other model. A resume inherits the model the session is
+    running at resume time, not the one the original job ran on.
 
 
 ---

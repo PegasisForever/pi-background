@@ -48,9 +48,10 @@ never spends a read finding out it already had everything. You get the last five
 terminal, on every result and every completion message, which is the same split pi makes.
 
 **Subagents.** `run_agent` starts a whole `pi` process on a task, locally or inside a sandbox
-reached over SSH, and reports the same way. There is one kind of subagent: no roles, no presets, no
-tool allowlist guessed by the parent. The task is the whole instruction. `resume_agent` continues a
-finished one with its context intact.
+reached over SSH, and reports the same way. It runs on the same model the session is already
+running, thinking level included. There is one kind of subagent: no roles, no presets, no
+tool allowlist guessed by the parent. The task is the whole instruction. `resume_agent`
+continues a finished one with its context intact.
 
 **The nudge.** When the agent ends a turn having said it would do something it did not do, a cheap
 classifier model notices and sends it one line: *You said you would run the test suite, but did
@@ -216,6 +217,8 @@ Written down in full in §12 of docs/DESIGN.md. The ones worth knowing before yo
 - A command that backgrounds its own children with `&` survives a stop.
 - A project config is read without a trust check, and it can name the command that creates a
   sandbox.
+- A subagent runs on the session's model. A sandbox without that provider's authentication, or
+  without that model in its catalogue, fails the job loudly instead of switching models.
 - Jobs die when pi dies. There is no daemon.
 - A job that hangs runs until something stops it. It reports that it has overrun, every five
   minutes, and the decision stays with the agent.

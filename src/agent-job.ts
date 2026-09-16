@@ -27,18 +27,14 @@ export interface AgentRun {
 	sessionDir: string;
 	sessionId: string;
 	ssh?: string;
+	/** The parent's model, when the session has one: the child runs on the same one. */
+	model?: { provider: string; id: string };
+	/** The parent's thinking level, a pi `--thinking` value such as "high". */
+	thinking?: string;
 }
 
 export function runAgent(job: Job, run: AgentRun): Promise<Outcome> {
-	const piArgs = [
-		"--mode",
-		"json",
-		`--jobs-depth=${run.depthRemaining - 1}`,
-		"--session-dir",
-		run.sessionDir,
-		"--session-id",
-		run.sessionId,
-	];
+	const piArgs = childArgs(run);
 	const remote = `cd ${quote(run.cwd)} && pi ${piArgs.map(quote).join(" ")}`;
 	const [cmd, args] = run.ssh
 		? ["ssh", [...run.ssh.split(/\s+/).slice(1), remote]]
@@ -75,6 +71,29 @@ export function runAgent(job: Job, run: AgentRun): Promise<Outcome> {
 		writeFileSync(join(job.dir, "result"), finalText(job, outcome.status === "done"));
 		return outcome;
 	});
+}
+
+/**
+ * The child's arguments: everything about the run except the task, which goes to its stdin. With no
+ * model the child picks its own default, as any fresh pi run does.
+ */
+export function childArgs(run: AgentRun): string[] {
+	const args = [
+		"--mode",
+		"json",
+		`--jobs-depth=${run.depthRemaining - 1}`,
+		"--session-dir",
+		run.sessionDir,
+		"--session-id",
+		run.sessionId,
+	];
+	if (run.model) {
+		args.push("--provider", run.model.provider, "--model", run.model.id);
+	}
+	if (run.thinking) {
+		args.push("--thinking", run.thinking);
+	}
+	return args;
 }
 
 /** Enough to hold any final assistant message; a larger one is a loud failure, not a silent loss. */

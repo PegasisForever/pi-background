@@ -344,6 +344,24 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	/**
+	 * The parent's model, so a subagent runs on the same one the session is running on instead of
+	 * whatever the child would pick as its startup default. A tool call cannot exist without a
+	 * model, so a missing one is a state that should not be reached — refused rather than turned
+	 * into a child on some other model (C10). Everything else about the child stays its own
+	 * (§3.3): no tools, no role, no prompt injection travels with it.
+	 */
+	function parentModel(ctx: ExtensionContext): {
+		model: { provider: string; id: string };
+		thinking?: string;
+	} {
+		const model = ctx.model;
+		if (!model) {
+			throw new Error("This session has no model, so it cannot start a subagent on the same one.");
+		}
+		return { model: { provider: model.provider, id: model.id }, thinking: ctx.thinkingLevel };
+	}
+
+	/**
 	 * Registered before any handler runs, and never from inside one. Pi catches a handler throw and
 	 * carries on, so a tool registered in `session_start` disappears for the whole session the first
 	 * time anything there fails — a typo in the config file would leave the model with no tools and
@@ -407,6 +425,8 @@ export default function (pi: ExtensionAPI) {
 			parameters: RunAgentParams,
 			async execute(_id, params, signal, _onUpdate, toolCtx) {
 				refuseWithoutDepth();
+				// Before the sandbox create, so a session that cannot name a model never makes one (§12.1).
+				const inherited = parentModel(toolCtx);
 				let sandbox: Sandbox | undefined;
 				if (params.isolation === "isolated") {
 					const isolated = config.isolated;
@@ -438,6 +458,7 @@ export default function (pi: ExtensionAPI) {
 							sessionDir: j.dir,
 							sessionId: j.id,
 							ssh: sandbox?.ssh,
+							...inherited,
 						}),
 				);
 				const started = answer(job);
@@ -463,8 +484,9 @@ export default function (pi: ExtensionAPI) {
 				"context, directory and host, so it takes neither cwd nor isolation. It returns a new " +
 				"job id, which job_list, job_stop and resume_agent take.",
 			parameters: ResumeAgentParams,
-			async execute(_id, params) {
+			async execute(_id, params, _signal, _onUpdate, toolCtx) {
 				refuseWithoutDepth();
+				const inherited = parentModel(toolCtx);
 				const previous = jobs.get(params.jobId);
 				if (!previous) throw new Error(`no such job: ${params.jobId}`);
 				if (previous.kind !== "agent") throw new Error(`job ${previous.id} is not a subagent`);
@@ -493,6 +515,7 @@ export default function (pi: ExtensionAPI) {
 								sessionDir: previous.dir,
 								sessionId: previous.id,
 								ssh: previous.ssh,
+								...inherited,
 							}),
 					),
 				);

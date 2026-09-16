@@ -92,6 +92,19 @@ function jobIdOf(text: string): string {
 	return match[1] as string;
 }
 
+test("run_agent refuses when the session has no model to pass down", async () => {
+	const tool = pi.tools.get("run_agent");
+	assert.ok(tool, "run_agent tool is registered");
+	// The stub context carries no model, which cannot happen in a live tool call — the guard is
+	// the loud refusal C10 asks for, not a quiet start on some other model.
+	await assert.rejects(
+		tool.execute("t2", { task: "x", title: "probe", expectedSeconds: 60 }, undefined, undefined, {
+			cwd: process.cwd(),
+		}),
+		/no model/,
+	);
+});
+
 const outputOf = (id: string): string =>
 	readFileSync(join(process.env.PI_CODING_AGENT_DIR as string, "jobs", id, "output"), "utf8");
 
