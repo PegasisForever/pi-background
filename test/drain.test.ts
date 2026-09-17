@@ -125,6 +125,11 @@ test("headless drain waits for a background command and reports it", async () =>
 	// The old behavior returned at once and shutdown aborted the job with no message.
 	assert.ok(elapsed >= 800, `settled waited out the job (took ${elapsed}ms)`);
 	assert.equal(pi.sent.length, 1, "one completion notification was sent");
+	assert.deepEqual(
+		pi.sent[0]?.options,
+		{ deliverAs: "steer", triggerTurn: true },
+		"completions are steering messages, not follow-ups",
+	);
 	const content = String(pi.sent[0]?.message.content ?? "");
 	assert.match(content, /finished/, "notification reports the natural finish");
 	assert.match(content, /drained-ok/, "notification carries the job's output");

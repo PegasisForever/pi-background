@@ -244,7 +244,11 @@ function finalise(job: Job, outcome: Outcome): void {
 const send = (content: string, lines: string[]): void => {
 	api.sendMessage(
 		{ customType: NAME, content, details: { lines }, display: true },
-		{ deliverAs: "followUp", triggerTurn: true },
+		// Steer, not followUp: a completion reaches the parent between the tool calls of a run in
+		// progress, so the parent reads it without ending its turn. triggerTurn keeps the idle case
+		// unchanged: the notification starts the turn the tool results promise. Both behaviours are
+		// pi's own, documented on sendMessage.
+		{ deliverAs: "steer", triggerTurn: true },
 	);
 };
 

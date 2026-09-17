@@ -578,8 +578,9 @@ section B was the answer.
 
 #### What the model sees
 
-A custom message of type `pi-background`, with `deliverAs: "followUp"` and `triggerTurn: true`, so
-it wakes the agent for a new turn. Wrapped in tags:
+A custom message of type `pi-background`, with `deliverAs: "steer"` and `triggerTurn: true`. While
+the agent is mid-run the message is injected after the current tool calls, so it is read without
+ending the turn; when the agent is idle it starts a new turn. Wrapped in tags:
 
 ```
 <pi-background>

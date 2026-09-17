@@ -556,9 +556,14 @@ Two kinds of message, one mechanism:
 ```js
 pi.sendMessage(
   { customType: "pi-background", content, details: { lines }, display: true },
-  { deliverAs: "followUp", triggerTurn: true },
+  { deliverAs: "steer", triggerTurn: true },
 )
 ```
+
+Delivery is steer: while the parent is mid-run the completion is injected after the current
+assistant turn's tool calls, before the next LLM call, so the parent reads it without ending its
+turn. When the parent is idle, `triggerTurn` starts one — the wake-up the tool results promise.
+Both are pi's own documented behaviours for `steer`, not assumptions (C10).
 
 ### §6.1 A job ended
 
