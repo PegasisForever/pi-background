@@ -619,6 +619,21 @@ invalidated by session replacement. One boolean, on a path we control both ends 
 **Telling the model not to poll** happens in one place: the tool description, where the model
 decides whether to wait. It states that the call returns at once and that the model will be woken.
 
+### §6.3 Held follow-ups
+
+An Alt+Enter follow-up queued while awaited jobs are still running does not wait for pi to deliver
+it — pi hands queued follow-ups to the model inside the run, before `agent_settled` fires, so no
+handler can delay one. The `input` handler claims it instead: `action: "handled"` removes it from
+pi's path entirely, and the extension holds it. When the last awaited job settles, the job-change
+callback replays it with `sendUserMessage`, which starts a turn when the parent is idle and joins
+pi's follow-up queue when it is not, so queue order is kept. The footer counts held follow-ups
+beside the jobs, and the hold is announced with one `notify`.
+
+A service is never a reason to hold: it never finishes (§1). A held message is not pi's to
+restore: Esc does not recall it, and `/new` loses it with the session (§12.21). A message sent by
+other means while one is held — Enter when idle, or a mid-run steer — can be answered before it;
+the hold waits for jobs, not for other messages.
+
 ---
 
 ## §7. The nudge
@@ -978,6 +993,8 @@ Written down so that when one bites, the real shape is handled rather than the i
     startup, loudly: pi prints the resolution error and exits 1, and the job reports `failed`.
     It does not fall back to some other model. A resume inherits the model the session is
     running at resume time, not the one the original job ran on.
+21. **A held follow-up is memory only.** A quit, a `/new` or a crash loses it, and Esc does not
+    recall it: it is not in pi's queue, so the restore-to-editor path never sees it.
 
 
 ---

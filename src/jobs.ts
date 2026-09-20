@@ -101,8 +101,12 @@ export const get = (id: string): Job | undefined => jobs.get(id);
  * wait, which is the moment it becomes news.
  */
 export const backgrounded = (): Job[] => list().filter((j) => j.status === "running" && !j.foreground);
+/** Awaited jobs still running: what the headless drain waits out (§5.4) and what a held
+ * follow-up waits for (§6.3). A service is excluded on purpose — it never finishes, so waiting
+ * for one would wait forever (§1, §8). */
+export const awaited = (): Job[] => backgrounded().filter((j) => j.expectedSeconds !== null);
 /** A service is not waited on, so it must not hold the session busy or silence a nudge. */
-export const activeCount = (): number => backgrounded().filter((j) => j.expectedSeconds !== null).length;
+export const activeCount = (): number => awaited().length;
 
 const outputPath = (job: Job): string => join(job.dir, "output");
 const resultPath = (job: Job): string => join(job.dir, "result");

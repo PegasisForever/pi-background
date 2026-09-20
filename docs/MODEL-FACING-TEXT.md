@@ -779,11 +779,28 @@ One status, under the key `pi-background`, present only while at least one job i
 | 2 commands | `2 commands` |
 | 1 subagent | `1 subagent` |
 | 2 commands and 1 subagent | `2 commands, 1 subagent` |
+| 1 command and 1 held follow-up | `1 command, 1 held follow-up` |
 | none | the status is cleared |
+
+One status, under the key `pi-background`, present while at least one job is running or a
+follow-up is held:
 
 The key is the extension's own name, so `pi-powerline-footer` can lift it out of its overflow row
 into a segment of its own with a `customItems` entry naming that key. This is pure UI. It is not a
 session entry and is never saved.
+
+### A held follow-up
+
+Alt+Enter while a job runs: pi's own queue indicator goes away, because the message is not in it.
+Two things replace it, both yours alone — the model never sees either. One `notify`:
+
+```
+Held until the running background job finishes.
+```
+
+(the count names the jobs when there are several), and a footer count, `1 held follow-up`, beside
+the jobs. When the last awaited job finishes, the message is sent as if you had typed it, and the
+count drops to the jobs alone.
 
 ### The `/jobs` listing
 

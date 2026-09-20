@@ -16,20 +16,21 @@ interface Sent {
 }
 
 interface StubPi {
-	handlers: Map<string, Array<(event: object, ctx: ExtensionContext) => Promise<void>>>;
+	handlers: Map<string, Array<(event: object, ctx: ExtensionContext) => Promise<unknown>>>;
 	tools: Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>;
 	sent: Sent[];
+	userSent: Array<{ content: unknown; options: unknown }>;
 	registerFlag: () => void;
 	registerEntryRenderer: () => void;
 	registerMessageRenderer: () => void;
 	registerCommand: () => void;
 	registerTool: (def: { name: string }) => void;
-	on: (event: string, handler: (event: object, ctx: ExtensionContext) => Promise<void>) => void;
+	on: (event: string, handler: (event: object, ctx: ExtensionContext) => Promise<unknown>) => void;
 	getFlag: () => undefined;
 	exec: () => Promise<never>;
 	appendEntry: () => void;
 	sendMessage: (message: Sent["message"], options?: unknown) => void;
-	sendUserMessage: () => void;
+	sendUserMessage: (content: unknown, options?: unknown) => void;
 }
 
 function makePi(): StubPi {
@@ -37,6 +38,7 @@ function makePi(): StubPi {
 		handlers: new Map(),
 		tools: new Map(),
 		sent: [],
+		userSent: [],
 		registerFlag: () => {},
 		registerEntryRenderer: () => {},
 		registerMessageRenderer: () => {},
@@ -53,7 +55,9 @@ function makePi(): StubPi {
 		sendMessage: (message, options) => {
 			pi.sent.push({ message, options });
 		},
-		sendUserMessage: () => {},
+		sendUserMessage: (content, options) => {
+			pi.userSent.push({ content, options });
+		},
 	};
 	return pi;
 }
@@ -63,7 +67,7 @@ function makeCtx(mode: "print" | "json" | "tui" | "rpc"): ExtensionContext {
 		mode,
 		hasUI: mode === "tui" || mode === "rpc",
 		cwd: process.cwd(),
-		ui: { setStatus: () => {} },
+		ui: { setStatus: () => {}, notify: () => {} },
 		sessionManager: { getSessionId: () => "test-session", getLeafEntry: () => undefined },
 		isIdle: () => true,
 		hasPendingMessages: () => false,
@@ -189,5 +193,49 @@ test("services are excluded from the drain and named loudly at shutdown", async 
 		errors.some((line) => line.includes('Service "svc probe"')),
 		`shutdown named the aborted service on stderr: ${JSON.stringify(errors)}`,
 	);
+	pi.sent.length = 0;
+});
+
+test("a follow-up queued while an awaited job runs is held until the job settles", async () => {
+	const ctx = makeCtx("tui");
+	await emit("session_start", ctx);
+	await bash({ command: "sleep 1 && echo hold-done", title: "hold probe", expectedSeconds: 300 });
+
+	const handler = pi.handlers.get("input")?.[0];
+	assert.ok(handler, "input handler is registered");
+	const result = await handler(
+		{ text: "after the build", source: "interactive", streamingBehavior: "followUp" },
+		ctx,
+	);
+	assert.deepEqual(result, { action: "handled" }, "the follow-up is claimed, not queued in pi");
+	assert.equal(pi.userSent.length, 0, "nothing is sent while the job runs");
+
+	// Print-mode settled drains the awaited job; the release rides the job-change callback.
+	await emit("agent_settled", makeCtx("print"));
+	assert.deepEqual(pi.userSent.map((m) => m.content), ["after the build"]);
+	assert.deepEqual(
+		pi.userSent[0]?.options,
+		{ expandPromptTemplates: true },
+		"an idle release triggers the turn itself",
+	);
+	await emit("session_shutdown", ctx);
+	pi.sent.length = 0;
+	pi.userSent.length = 0;
+});
+
+test("a follow-up queued while only a service runs is not held", async () => {
+	const ctx = makeCtx("tui");
+	await emit("session_start", ctx);
+	await bash({ command: "sleep 30", title: "hold service probe", expectedSeconds: null });
+
+	const handler = pi.handlers.get("input")?.[0];
+	assert.ok(handler, "input handler is registered");
+	const result = await handler(
+		{ text: "carry on", source: "interactive", streamingBehavior: "followUp" },
+		ctx,
+	);
+	assert.deepEqual(result, { action: "continue" }, "a service is never a reason to hold");
+	assert.equal(pi.userSent.length, 0);
+	await emit("session_shutdown", ctx); // aborts the service; shutdown is its only record
 	pi.sent.length = 0;
 });

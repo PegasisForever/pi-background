@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { contentText } from "@earendil-works/pi-ai";
+import { contentText, type ImageContent, type TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CONFIG_DIR_NAME, getAgentDir, getShellConfig, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Static, TObject } from "typebox";
@@ -174,6 +174,8 @@ export default function (pi: ExtensionAPI) {
 	let depthRemaining = config.maxDepth ?? 1;
 	let isChild = false;
 	let nudgesThisTurn = 0;
+	/** Follow-ups held until the awaited jobs finish (§6.3). Oldest first; in-memory, per session. */
+	const held: Array<{ text: string; images: ImageContent[] }> = [];
 	let runtime: ModelRuntime | undefined;
 	/** True while `drainIfHeadless` is waiting out background work (headless only, §5.4). */
 	let draining = false;
@@ -201,6 +203,7 @@ export default function (pi: ExtensionAPI) {
 		const parts = [
 			commands > 0 ? `${commands} command${commands > 1 ? "s" : ""}` : undefined,
 			agents > 0 ? `${agents} subagent${agents > 1 ? "s" : ""}` : undefined,
+			held.length > 0 ? `${held.length} held follow-up${held.length > 1 ? "s" : ""}` : undefined,
 		].filter((p) => p !== undefined);
 		ctx.ui.setStatus(jobs.NAME, parts.length ? parts.join(", ") : undefined);
 	}
@@ -249,7 +252,7 @@ export default function (pi: ExtensionAPI) {
 		try {
 			for (;;) {
 				if (isQuiescent(ctx)) return;
-				const awaited = jobs.backgrounded().filter((j) => j.expectedSeconds !== null);
+				const awaited = jobs.awaited();
 				if (awaited.length > 0) {
 					await Promise.race([Promise.all(awaited.map((j) => j.settled)), woken]);
 				} else {
@@ -259,6 +262,28 @@ export default function (pi: ExtensionAPI) {
 		} finally {
 			draining = false;
 		}
+	}
+
+	/**
+	 * Send held follow-ups, oldest first (§6.3). Idle means the first one triggers the turn
+	 * itself; otherwise each joins pi's follow-up queue, in order. A service never releases one:
+	 * it never finishes (§1). Replayed with template expansion on, because claiming the input
+	 * skipped the expansion a typed message would have had.
+	 */
+	function flushHeld(ctx: ExtensionContext): void {
+		if (held.length === 0 || sessionEnding || jobs.awaited().length > 0) return;
+		const out = held.splice(0, held.length);
+		for (const m of out) {
+			const content: string | (TextContent | ImageContent)[] =
+				m.images.length > 0 ? [{ type: "text", text: m.text }, ...m.images] : m.text;
+			pi.sendUserMessage(
+				content,
+				ctx.isIdle()
+					? { expandPromptTemplates: true }
+					: { deliverAs: "followUp", expandPromptTemplates: true },
+			);
+		}
+		refreshActivity(ctx);
 	}
 
 	async function classify(nudge: NonNullable<Config["nudge"]>, text: string): Promise<string> {
@@ -607,7 +632,10 @@ export default function (pi: ExtensionAPI) {
 		// pi caches the extension module process-wide (see jobs.init), so per-session flags
 		// are reset here, not declared fresh.
 		sessionEnding = false;
+		// A held follow-up belongs to the session that queued it (§6.3); a new one starts empty.
+		held.length = 0;
 		jobs.init(pi, () => {
+			flushHeld(ctx);
 			refreshActivity(ctx);
 			poke();
 		});
@@ -655,8 +683,26 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Our own nudge arrives as "extension"; a person types "interactive", a client sends "rpc".
-	pi.on("input", async (event) => {
+	pi.on("input", async (event, ctx) => {
 		if (event.source !== "extension") nudgesThisTurn = 0;
+		// An Alt+Enter follow-up queued while awaited jobs run is held here instead of pi's queue:
+		// pi delivers queued follow-ups inside the run, before agent_settled fires, so no handler
+		// could delay one — claiming it is the only way (§6.3). flushHeld releases it when the
+		// jobs end; Esc cannot recall it, because it is no longer pi's to restore.
+		if (event.source === "extension") return { action: "continue" };
+		if (event.streamingBehavior !== "followUp") return { action: "continue" };
+		const awaited = jobs.awaited();
+		if (awaited.length === 0) return { action: "continue" };
+		held.push({ text: event.text, images: event.images ?? [] });
+		const n = awaited.length;
+		ctx.ui.notify(
+			n === 1
+				? "Held until the running background job finishes."
+				: `Held until the ${n} running background jobs finish.`,
+			"info",
+		);
+		refreshActivity(ctx);
+		return { action: "handled" };
 	});
 }
 
