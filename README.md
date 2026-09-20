@@ -36,10 +36,10 @@ sentence: *Do not poll it, sleep, or run a command to watch it: end your turn, a
 will start a new one.* A job id is an invitation to sit and watch, and a turn spent watching learns
 nothing the notification will not deliver.
 
-**A follow-up can wait for the jobs.** Alt+Enter queues a message for after the turn; when
-background jobs are still running at that moment, the extension holds it and sends it the moment
-the last one finishes — a service is never waited on. Esc does not recall a held message, and a
-quit loses it.
+**A follow-up can wait for the jobs.** Alt+Enter queues a message for after the turn; the
+extension takes it over, and releases it when no awaited background job is running — so a job
+you start after queueing still gets waited for. A service is never waited on. Esc does not
+recall a held message, and a quit loses it.
 
 **Escape stops the waiting, not the command.** Interrupt a command that is running in front of the
 agent and it moves to the background, as an overrun does. `job_stop` is the only thing that ends a

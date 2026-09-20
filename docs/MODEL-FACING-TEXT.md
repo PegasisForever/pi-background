@@ -791,16 +791,18 @@ session entry and is never saved.
 
 ### A held follow-up
 
-Alt+Enter while a job runs: pi's own queue indicator goes away, because the message is not in it.
-Two things replace it, both yours alone — the model never sees either. One `notify`:
+Alt+Enter while a turn runs: pi's own queue indicator goes away, because the message is not in
+it. When a job is running, two things replace it, both yours alone — the model never sees either.
+One `notify`:
 
 ```
 Held until the running background job finishes.
 ```
 
 (the count names the jobs when there are several), and a footer count, `1 held follow-up`, beside
-the jobs. When the last awaited job finishes, the message is sent as if you had typed it, and the
-count drops to the jobs alone.
+the jobs. With no job running there is no notify and no count: the message goes out when the turn
+settles, which is what pi's own queue would have done with it. When the last awaited job
+finishes, the message is sent as if you had typed it, and the count drops to the jobs alone.
 
 ### The `/jobs` listing
 

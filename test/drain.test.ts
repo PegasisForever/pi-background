@@ -212,7 +212,10 @@ test("a follow-up queued while an awaited job runs is held until the job settles
 
 	// Print-mode settled drains the awaited job; the release rides the job-change callback.
 	await emit("agent_settled", makeCtx("print"));
-	assert.deepEqual(pi.userSent.map((m) => m.content), ["after the build"]);
+	assert.deepEqual(
+		pi.userSent.map((m) => m.content),
+		["after the build"],
+	);
 	assert.deepEqual(
 		pi.userSent[0]?.options,
 		{ expandPromptTemplates: true },
@@ -223,7 +226,38 @@ test("a follow-up queued while an awaited job runs is held until the job settles
 	pi.userSent.length = 0;
 });
 
-test("a follow-up queued while only a service runs is not held", async () => {
+test("a follow-up queued before the job starts is still held until the job settles", async () => {
+	// The reported timeline: the follow-up is queued mid-turn, before the bash call has created
+	// the job; the turn then settles while the job runs; the message must wait for the job.
+	const ctx = makeCtx("tui");
+	await emit("session_start", ctx);
+
+	const handler = pi.handlers.get("input")?.[0];
+	assert.ok(handler, "input handler is registered");
+	const result = await handler(
+		{ text: "after the build", source: "interactive", streamingBehavior: "followUp" },
+		ctx,
+	);
+	assert.deepEqual(result, { action: "handled" }, "claimed even though no job runs yet");
+	assert.equal(pi.userSent.length, 0);
+
+	// Mid-turn: the job starts.
+	await bash({ command: "sleep 1 && echo late-job", title: "late job", expectedSeconds: 300 });
+
+	// The turn settles while the job runs.
+	await emit("agent_settled", ctx);
+	assert.equal(pi.userSent.length, 0, "still held while the job runs");
+
+	// The job ends: print-mode settled drains it, the release rides the job-change callback.
+	await emit("agent_settled", makeCtx("print"));
+	assert.deepEqual(pi.userSent.map((m) => m.content), ["after the build"]);
+
+	await emit("session_shutdown", ctx);
+	pi.sent.length = 0;
+	pi.userSent.length = 0;
+});
+
+test("a service never blocks a held follow-up's release", async () => {
 	const ctx = makeCtx("tui");
 	await emit("session_start", ctx);
 	await bash({ command: "sleep 30", title: "hold service probe", expectedSeconds: null });
@@ -234,8 +268,14 @@ test("a follow-up queued while only a service runs is not held", async () => {
 		{ text: "carry on", source: "interactive", streamingBehavior: "followUp" },
 		ctx,
 	);
-	assert.deepEqual(result, { action: "continue" }, "a service is never a reason to hold");
+	assert.deepEqual(result, { action: "handled" }, "claimed; a service is not an awaited job");
 	assert.equal(pi.userSent.length, 0);
+
+	// The settle releases it although the service is still running: a service is never
+	// waited on (§1), so it cannot be a reason to hold.
+	await emit("agent_settled", ctx);
+	assert.deepEqual(pi.userSent.map((m) => m.content), ["carry on"]);
 	await emit("session_shutdown", ctx); // aborts the service; shutdown is its only record
 	pi.sent.length = 0;
+	pi.userSent.length = 0;
 });

@@ -621,18 +621,24 @@ decides whether to wait. It states that the call returns at once and that the mo
 
 ### §6.3 Held follow-ups
 
-An Alt+Enter follow-up queued while awaited jobs are still running does not wait for pi to deliver
-it — pi hands queued follow-ups to the model inside the run, before `agent_settled` fires, so no
-handler can delay one. The `input` handler claims it instead: `action: "handled"` removes it from
-pi's path entirely, and the extension holds it. When the last awaited job settles, the job-change
-callback replays it with `sendUserMessage`, which starts a turn when the parent is idle and joins
-pi's follow-up queue when it is not, so queue order is kept. The footer counts held follow-ups
-beside the jobs, and the hold is announced with one `notify`.
+An Alt+Enter follow-up queued while a run is live is claimed by the `input` handler —
+`action: "handled"` removes it from pi's path entirely, so pi's queue never delivers it. The
+first version claimed one only when awaited jobs were already running, and that was a bug: the
+job a caller is about to start does not exist yet, so job state at input time cannot decide the
+hold — the message raced the job and won. What decides the hold is the release, not the claim.
 
-A service is never a reason to hold: it never finishes (§1). A held message is not pi's to
-restore: Esc does not recall it, and `/new` loses it with the session (§12.21). A message sent by
-other means while one is held — Enter when idle, or a mid-run steer — can be answered before it;
-the hold waits for jobs, not for other messages.
+The release is one condition — no awaited jobs — checked at every job change and at settle. When
+no job is ever involved, the settle release is pi's own turn-end delivery, so nothing changes;
+when a job starts after the claim, the message waits for it. On release the message is replayed
+with `sendUserMessage`, which starts a turn when the parent is idle and joins pi's follow-up
+queue when it is not, so queue order is kept. A release replaces the nudge: it is the
+continuation the nudge would have asked for. The footer counts held follow-ups beside the jobs,
+and the hold is announced with one `notify` when jobs are running.
+
+A service is never a reason to hold: it is not awaited, so it blocks no release (§1). A held
+message is not pi's to restore: Esc does not recall it, and `/new` loses it with the session
+(§12.21). A message sent by other means while one is held — Enter when idle, or a mid-run steer —
+can be answered before it; the hold waits for jobs, not for other messages.
 
 ---
 

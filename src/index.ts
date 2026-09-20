@@ -266,12 +266,13 @@ export default function (pi: ExtensionAPI) {
 
 	/**
 	 * Send held follow-ups, oldest first (§6.3). Idle means the first one triggers the turn
-	 * itself; otherwise each joins pi's follow-up queue, in order. A service never releases one:
-	 * it never finishes (§1). Replayed with template expansion on, because claiming the input
-	 * skipped the expansion a typed message would have had.
+	 * itself; otherwise each joins pi's follow-up queue, in order. A service never blocks a
+	 * release: it is not awaited (§1). Returns true when at least one message went out.
+	 * Replayed with template expansion on, because claiming the input skipped the expansion a
+	 * typed message would have had.
 	 */
-	function flushHeld(ctx: ExtensionContext): void {
-		if (held.length === 0 || sessionEnding || jobs.awaited().length > 0) return;
+	function flushHeld(ctx: ExtensionContext): boolean {
+		if (held.length === 0 || sessionEnding || jobs.awaited().length > 0) return false;
 		const out = held.splice(0, held.length);
 		for (const m of out) {
 			const content: string | (TextContent | ImageContent)[] =
@@ -284,6 +285,7 @@ export default function (pi: ExtensionAPI) {
 			);
 		}
 		refreshActivity(ctx);
+		return true;
 	}
 
 	async function classify(nudge: NonNullable<Config["nudge"]>, text: string): Promise<string> {
@@ -675,6 +677,9 @@ export default function (pi: ExtensionAPI) {
 			// Teardown won the race (a signal during the drain): stay quiet, the session
 			// is going away and a nudge would send a user message into it.
 			if (sessionEnding || draining) return;
+			// Held follow-ups go out before the nudge, and a release replaces it: the message
+			// is the continuation the nudge would have asked for (§6.3, §7.1).
+			if (flushHeld(ctx)) return;
 			await nudge(ctx);
 		} finally {
 			refreshActivity(ctx);
@@ -685,22 +690,24 @@ export default function (pi: ExtensionAPI) {
 	// Our own nudge arrives as "extension"; a person types "interactive", a client sends "rpc".
 	pi.on("input", async (event, ctx) => {
 		if (event.source !== "extension") nudgesThisTurn = 0;
-		// An Alt+Enter follow-up queued while awaited jobs run is held here instead of pi's queue:
-		// pi delivers queued follow-ups inside the run, before agent_settled fires, so no handler
-		// could delay one — claiming it is the only way (§6.3). flushHeld releases it when the
-		// jobs end; Esc cannot recall it, because it is no longer pi's to restore.
+		// An Alt+Enter follow-up is claimed whenever a run is live, regardless of jobs: the job a
+		// caller is about to start does not exist yet, so job state at input time cannot decide
+		// the hold — that was the bug §6.3 records. What decides it is the release, checked at
+		// every job change and at settle. With no jobs involved the release is pi's own turn-end
+		// delivery, so nothing else changes. Esc cannot recall a held message, because it is no
+		// longer pi's to restore.
 		if (event.source === "extension") return { action: "continue" };
 		if (event.streamingBehavior !== "followUp") return { action: "continue" };
-		const awaited = jobs.awaited();
-		if (awaited.length === 0) return { action: "continue" };
 		held.push({ text: event.text, images: event.images ?? [] });
-		const n = awaited.length;
-		ctx.ui.notify(
-			n === 1
-				? "Held until the running background job finishes."
-				: `Held until the ${n} running background jobs finish.`,
-			"info",
-		);
+		const n = jobs.awaited().length;
+		if (n > 0) {
+			ctx.ui.notify(
+				n === 1
+					? "Held until the running background job finishes."
+					: `Held until the ${n} running background jobs finish.`,
+				"info",
+			);
+		}
 		refreshActivity(ctx);
 		return { action: "handled" };
 	});
