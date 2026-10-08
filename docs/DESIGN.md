@@ -395,11 +395,17 @@ await createLocalBashOperations().exec(command, cwd, {
 environment and process-tree termination are all the same code the built-in `bash` tool uses.
 `getShellConfig()`, which `exec` calls, returns `{ shell: "/bin/bash", args: ["-c"] }` here.
 
-**No options, and no `env`.** `exec` defaults `env` to pi's own `getShellEnv()`, which prepends the
+**No `env`.** `exec` defaults `env` to pi's own `getShellEnv()`, which prepends the
 managed bin directory — where pi's bundled `fd` and `rg` live. Passing an environment is therefore
 what *breaks* a command that works in `bash`; omitting it inherits pi's exactly, with nothing to
-keep in step. Verified: `fd --version` succeeds in a job. No `PI_*` variables are set, because
-setting them would mean passing `env`.
+keep in step. Verified: `fd --version` succeeds in a job.
+
+**The `PI_*` variables are shell lines before the command.** pi's own `bash` tool sets
+`PI_SESSION_ID`, `PI_SESSION_FILE`, `PI_PROVIDER`, `PI_MODEL` and `PI_REASONING_LEVEL` from the
+tool context, and tools in the session use them to find it (a command that reports back to the
+chat that ran it needs `PI_SESSION_ID`). Since `env` is not passed, the command runs after
+`unset` of all five and an `export` of each value the context has, the same values pi's tool sets.
+Seen missing in a live session: a command that needed `PI_SESSION_ID` failed under this tool.
 
 **The `shellPath` and `shellCommandPrefix` settings are not read.** Reading them means building a
 second `SettingsManager`, whose `projectTrusted` option defaults to `true` — so it would execute
@@ -917,7 +923,6 @@ Only the ones whose reason is not obvious from the design.
 | Parsing the child's event stream while it runs | nothing watches it; the tail is read once at the end |
 | An in-process spawn, shell resolution, or signal escalation of our own | pi exports all three |
 | Reading pi's `shellPath` / `shellCommandPrefix` | needs a second SettingsManager that trusts untrusted projects by default. §4 |
-| `PI_*` variables in a command job | passing any environment loses pi's `PATH`. §4 |
 | A session latch that disables the nudge | pi reports extension errors; a throw is louder and holds no state. §7.4 |
 | A child process per nudge classification | 510 ms of startup per turn end |
 | A pid in a command's result or in `job_list` | pi's shell backend returns an exit code and nothing else. Reporting a pid means spawning the shell ourselves, or rewriting the model's command to record its own — one loses §4, the other lies about what ran. `job_stop` already stops a job by id |

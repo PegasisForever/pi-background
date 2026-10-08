@@ -416,7 +416,7 @@ export default function (pi: ExtensionAPI) {
 				const foreground = seconds !== null && seconds < jobs.FOREGROUND_MAX_SECONDS;
 				const job = jobs.start(
 					{ kind: "command", title: params.title, cwd, expectedSeconds: seconds, foreground },
-					(j) => runCommand(j, params.command, cwd),
+					(j) => runCommand(j, params.command, cwd, toolCtx),
 				);
 				if (!foreground) return answer(job);
 

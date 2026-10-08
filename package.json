@@ -1,6 +1,6 @@
 {
 	"name": "pi-background",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"private": true,
 	"type": "module",
 	"description": "Background shell commands, subagents, a completion nudge and an activity signal for the pi coding agent.",

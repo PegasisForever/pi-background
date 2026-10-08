@@ -86,6 +86,8 @@ async function bash(params: Record<string, unknown>): Promise<string> {
 	assert.ok(tool, "bash tool is registered");
 	const result = (await tool.execute("t1", params, undefined, undefined, {
 		cwd: process.cwd(),
+		sessionManager: { getSessionId: () => "test-session", getSessionFile: () => "/tmp/it's.jsonl" },
+		model: { provider: "test-provider", id: "test-model" },
 	})) as { content: Array<{ text: string }> };
 	return result.content[0]?.text ?? "";
 }
@@ -250,7 +252,10 @@ test("a follow-up queued before the job starts is still held until the job settl
 
 	// The job ends: print-mode settled drains it, the release rides the job-change callback.
 	await emit("agent_settled", makeCtx("print"));
-	assert.deepEqual(pi.userSent.map((m) => m.content), ["after the build"]);
+	assert.deepEqual(
+		pi.userSent.map((m) => m.content),
+		["after the build"],
+	);
 
 	await emit("session_shutdown", ctx);
 	pi.sent.length = 0;
@@ -274,8 +279,22 @@ test("a service never blocks a held follow-up's release", async () => {
 	// The settle releases it although the service is still running: a service is never
 	// waited on (§1), so it cannot be a reason to hold.
 	await emit("agent_settled", ctx);
-	assert.deepEqual(pi.userSent.map((m) => m.content), ["carry on"]);
+	assert.deepEqual(
+		pi.userSent.map((m) => m.content),
+		["carry on"],
+	);
 	await emit("session_shutdown", ctx); // aborts the service; shutdown is its only record
 	pi.sent.length = 0;
 	pi.userSent.length = 0;
+});
+
+test("a command sees the session variables pi's own bash tool sets", async () => {
+	process.env.PI_REASONING_LEVEL = "inherited";
+	const text = await bash({ command: "env | grep ^PI_ | sort", title: "env probe", expectedSeconds: 5 });
+	delete process.env.PI_REASONING_LEVEL;
+	assert.match(
+		text,
+		/PI_MODEL=test-model\nPI_PROVIDER=test-provider\nPI_SESSION_FILE=\/tmp\/it's\.jsonl\nPI_SESSION_ID=test-session\n/,
+	);
+	assert.doesNotMatch(text, /PI_REASONING_LEVEL/);
 });
