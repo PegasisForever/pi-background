@@ -557,8 +557,14 @@ reported for commands only.
 
 `exit reason` appears only when it says something the exit code does not. A command that exits 7
 shows the code and no reason. An agent that failed shows a reason such as `spawn ssh ENOENT`,
-`killed by SIGKILL`, `exit 1`, `no assistant message in the last 4194304 bytes of <path>`, or
-`unparsable event in <path> line <n>`.
+`killed by SIGKILL`, `exit 1`, `no assistant message in <path>`,
+`unparsable event in <path> line <n>`, `its last reply was an error: <provider message>`, or
+`its last reply has no text`.
+
+The last two are for a child that exited 0. pi exits 0 after a provider error too (a 429 quota
+error, a 400 for a bad request), so the child's last reply decides, not its exit code. Before
+this, such a child was reported `finished` with no reason and no response, and the parent read
+the raw event stream to find out what happened.
 
 `elapsed` is `<n>s` below one minute, `<m>m<ss>s` below one hour, `<h>h<mm>m` above — for example
 `9s`, `3m58s`, `2h04m`.
@@ -643,7 +649,8 @@ Read the agent's response at /home/rmng/.pi/agent/jobs/01a09979-cbb9-7639-87ae-4
 ```
 
 There is no exit code: for a subagent the outcome word carries the whole answer. An
-`It ended because …` line appears when it failed.
+`It ended because …` line appears when it failed. A `finished` agent always has a response: a child
+whose last reply is an error or has no text is `failed`, with that as its reason.
 
 The `Read the agent's response at …` line is present **only when that file is not empty**. A killed
 or crashed subagent often wrote nothing, and pointing the model at an empty file wastes a read.
@@ -679,9 +686,29 @@ If it is a service that is not meant to finish, such as a dev server, call job_s
 </pi-background>
 ```
 
-`Command` is `Agent` for a subagent, **and a subagent's message stops at the id** — the last line is
-for commands only, because §1 forbids a null estimate on an agent and there is nothing to convert it
-to.
+`Command` is `Agent` for a subagent. The `job_service` line is for commands only, because §1
+forbids a null estimate on an agent and there is nothing to convert it to. **A subagent's message
+ends with what it is doing instead**: the tool call it is in, or the last one it made, read from its
+event stream. The call only — its name and arguments — never its result:
+
+```
+<pi-background>
+Agent investigator is still running after 15m02s, longer than the 900s you expected.
+It has not been stopped. Leave it running, or stop it with job_stop.
+Its job id is 01a15631-2e5b-70ec-9f7c-cd7719887064.
+Its current tool call is bash {"command":"medi calls --org 42 --week 2026-10-12","title":"calls","expectedSeconds":60}, started at 2026-10-19T21:58:11Z and running for 4m12s.
+</pi-background>
+```
+
+When the call has ended, the line reads
+`Its last tool call was <name> <arguments>, started at <time>; it ran for <duration> and ended <duration> ago.`,
+and before the first call `It has not called a tool yet.` Arguments longer than 2000 bytes are cut,
+ending `… (cut, <size> in all)`: a write's whole content would otherwise repeat in every overrun.
+The time is UTC.
+
+This line exists because the message asks the model to decide whether to stop the job, and without
+it the model had nothing to decide on: it guessed the job's `output` path and read the raw JSON
+event stream to see what the subagent was doing.
 
 The message names the options and recommends none: the extension cannot tell a stuck build from a
 large one, and the model started the job. The third option is here rather than in the `bash`
@@ -863,7 +890,7 @@ Written to disk, read by nobody unless asked for:
 |---|---|
 | `<agent dir>/jobs/<job id>/output` | the job's stdout — the raw JSON event stream for an agent job |
 | `<agent dir>/jobs/<job id>/stderr` | an agent child's stderr |
-| `<agent dir>/jobs/<job id>/result` | an agent job's final assistant message, as plain text |
+| `<agent dir>/jobs/<job id>/result` | the text of an agent job's last reply, as plain text |
 | `<agent dir>/state/<pid>.json` | the activity file: pid, process start time, session id, cwd, and `active` or `idle` |
 
 The model reaches `output` and `result` only by reading the paths it was given. The activity file

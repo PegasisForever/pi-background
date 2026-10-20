@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
-import { createWriteStream, statSync, writeFileSync } from "node:fs";
+import { createWriteStream, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { type Job, type Outcome, readTail, write } from "./jobs.ts";
+import { type Job, type Outcome, write } from "./jobs.ts";
 
 export interface Sandbox {
 	id: string;
@@ -40,6 +42,7 @@ export function runAgent(job: Job, run: AgentRun): Promise<Outcome> {
 		? ["ssh", [...run.ssh.split(/\s+/).slice(1), remote]]
 		: [process.execPath, [process.argv[1] as string, ...piArgs]];
 
+	const events = readEvents(job);
 	return new Promise<Outcome>((resolve) => {
 		const child = spawn(cmd as string, args as string[], {
 			cwd: run.ssh ? undefined : run.cwd,
@@ -47,12 +50,15 @@ export function runAgent(job: Job, run: AgentRun): Promise<Outcome> {
 			signal: job.stop.signal,
 		});
 		let failure: string | undefined;
-		child.stdout.on("data", (chunk: Buffer) => write(job, chunk));
+		child.stdout.on("data", (chunk: Buffer) => {
+			write(job, chunk);
+			events.push(chunk);
+		});
 		child.stderr.pipe(createWriteStream(join(job.dir, "stderr")));
 		child.stdin.on("error", (err) => (failure ??= err.message));
 		child.on("error", (err) => (failure = err.message));
 		// 'close' fires after 'error' too, and only once stdout has drained, which is what
-		// finalText needs. It is not guaranteed: a surviving descendant holding the inherited
+		// the last reply needs. It is not guaranteed: a surviving descendant holding the inherited
 		// pipes keeps it from firing even after the child is gone (§12.10 of DESIGN.md).
 		child.on("close", (code, signal) =>
 			resolve(
@@ -67,9 +73,9 @@ export function runAgent(job: Job, run: AgentRun): Promise<Outcome> {
 		);
 		child.stdin.end(run.task);
 	}).then((outcome) => {
-		// A failed run may legitimately have produced no message; a successful one may not.
-		writeFileSync(join(job.dir, "result"), finalText(job, outcome.status === "done"));
-		return outcome;
+		const ended = events.end(outcome);
+		writeFileSync(join(job.dir, "result"), ended.text);
+		return ended.outcome;
 	});
 }
 
@@ -96,32 +102,74 @@ export function childArgs(run: AgentRun): string[] {
 	return args;
 }
 
-/** Enough to hold any final assistant message; a larger one is a loud failure, not a silent loss. */
-const TAIL_BYTES = 4 * 1024 * 1024;
-
-function finalText(job: Job, required: boolean): string {
+/**
+ * The child's stdout, read as it arrives: one pi JSON event per line (§3.4). Two things are kept
+ * from it — the last assistant reply, which is the answer, and the latest tool call, which the
+ * overrun message reports (§6.2). Reading at the end instead is what lost answers: pi's last line,
+ * `agent_end`, repeats the whole conversation, and a long child's is larger than any tail window.
+ */
+export function readEvents(job: Job): {
+	push: (chunk: Buffer) => void;
+	end: (outcome: Outcome) => { outcome: Outcome; text: string };
+} {
 	const path = join(job.dir, "output");
-	const window = readTail(path, TAIL_BYTES);
-	const start = Math.max(0, statSync(path).size - TAIL_BYTES);
-	const lines = window.split("\n");
-	for (let i = lines.length - 1; i >= 0; i--) {
-		const line = lines[i] as string;
-		if (line === "" || !line.startsWith("{")) continue;
+	const decoder = new StringDecoder("utf8");
+	let partial = "";
+	let line = 0;
+	let reply: AssistantMessage | undefined;
+	let unparsable: string | undefined;
+
+	const read = (raw: string): void => {
+		line++;
+		if (raw === "" || !raw.startsWith("{")) return;
 		let event: JsonAgentSessionEvent;
 		try {
-			event = JSON.parse(line) as JsonAgentSessionEvent;
+			event = JSON.parse(raw) as JsonAgentSessionEvent;
 		} catch {
-			if (i === 0 && start > 0) break; // the window cut this line in half
-			throw new Error(`unparsable event in ${path} line ${i}`);
+			unparsable ??= `unparsable event in ${path} line ${line}`;
+			return;
 		}
-		if (event.type !== "message_end" || event.message.role !== "assistant") continue;
-		return event.message.content
-			.filter((c): c is { type: "text"; text: string } => c.type === "text")
-			.map((c) => c.text)
-			.join("");
-	}
-	if (required) throw new Error(`no assistant message in the last ${TAIL_BYTES} bytes of ${path}`);
-	return "";
+		if (event.type === "message_end" && event.message.role === "assistant") reply = event.message;
+		if (event.type === "tool_execution_start") {
+			job.toolCall = {
+				id: event.toolCallId,
+				name: event.toolName,
+				args: event.args,
+				startedAt: Date.now(),
+			};
+		}
+		if (event.type === "tool_execution_end" && job.toolCall?.id === event.toolCallId) {
+			job.toolCall.endedAt = Date.now();
+		}
+	};
+
+	return {
+		push(chunk) {
+			const lines = (partial + decoder.write(chunk)).split("\n");
+			partial = lines.pop() as string;
+			for (const raw of lines) read(raw);
+		},
+		end(outcome) {
+			read(partial + decoder.end());
+			const text = (reply?.content ?? [])
+				.filter((c): c is { type: "text"; text: string } => c.type === "text")
+				.map((c) => c.text)
+				.join("");
+			// A child that failed may legitimately have produced no reply; one that exited 0 may not.
+			// pi exits 0 after a provider error too, so its last reply decides, not its exit code.
+			if (outcome.status !== "done") return { outcome, text };
+			const failed = (reason: string) => ({
+				outcome: { ...outcome, status: "failed" as const, reason },
+				text,
+			});
+			if (unparsable) return failed(unparsable);
+			if (!reply) return failed(`no assistant message in ${path}`);
+			if (reply.stopReason === "error")
+				return failed(`its last reply was an error: ${reply.errorMessage}`);
+			if (text === "") return failed("its last reply has no text");
+			return { outcome, text };
+		},
+	};
 }
 
 const quote = (s: string): string => `'${s.replaceAll("'", `'\\''`)}'`;

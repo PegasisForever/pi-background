@@ -56,7 +56,10 @@ terminal, on every result and every completion message, which is the same split 
 reached over SSH, and reports the same way. It runs on the same model the session is already
 running, thinking level included. There is one kind of subagent: no roles, no presets, no
 tool allowlist guessed by the parent. The task is the whole instruction. `resume_agent`
-continues a finished one with its context intact.
+continues a finished one with its context intact. A subagent that overruns names the tool call it
+is in, with when it started, so the agent can tell busy from stuck without reading the raw event
+stream. A subagent whose last reply is a provider error, or has no text, is reported `failed` with
+that reason, even though pi exited 0.
 
 **The nudge.** When the agent ends a turn having said it would do something it did not do, a cheap
 classifier model notices and sends it one line: *You said you would run the test suite, but did

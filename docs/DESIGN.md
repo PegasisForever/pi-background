@@ -322,7 +322,21 @@ The notification carries the path, never the content (§6) — including for a f
 model reads, and how much of it, is the model's choice.
 
 The child's stderr is kept out of `output`: one stderr write landing inside a JSON record would
-split the line and silently cost the final text. A job is never killed for producing output, and
+split the line and silently cost the final text.
+
+**The answer is read as the events arrive, not from the file afterwards.** Each stdout line is one
+pi event; the extension keeps the last `message_end` of an assistant message, and writes its text to
+`result` when the child exits. It used to read the last 4 MiB of `output` at the end, and that lost
+real answers: pi's last line, `agent_end`, repeats the whole conversation, and for a long child that
+one line is larger than any window. 38 subagents that had finished were reported `failed` with
+`no assistant message in the last 4194304 bytes`, and their parents parsed the raw stream
+themselves. Reading as the events arrive has no window to outgrow.
+
+**pi exits 0 after a provider error, so the last reply decides the outcome.** A child that exits 0
+is `failed` when its last reply has `stopReason: "error"` (the reason is pi's `errorMessage`) or
+has no text. Both were seen: a 429 quota error, a 400 for a bad request, and an empty reply after
+a `job_list`. Before, each was `finished` with an empty `result` and no reason, and the parent read
+`output` to learn why. A job is never killed for producing output, and
 reads are capped by pi's own `read` tool, not by this extension.
 
 ### §3.5 Isolated sandboxes
@@ -607,6 +621,14 @@ That last part is the point. The extension does not know whether a build taking 
 estimate is stuck or merely large. The model started the job, knows what it is, and can read the
 output file; the decision is its own, and the message exists to hand it the fact it could not
 otherwise have.
+
+**A subagent has no output the model can read, so its message carries what it is doing.** The
+tool call it is in, or the last one it made — name, arguments, start time, how long it has run —
+taken from the same event stream that gives the answer (§3.4). Not the result: the call is enough
+to tell busy from stuck, and a result can be any size. Without it, models guessed the `output` path
+and tailed the raw JSON: of about 290 reads of a subagent's raw stream in Medi GPT sessions from
+2026-10-01 to 2026-10-19, 200 were of a subagent still running, 119 of them right after this
+message.
 
 Repeats are on §5.2a's interval, floored at five minutes.
 
@@ -897,7 +919,7 @@ the shape of the record will come from that failure rather than from a guess (C1
 | `jobs.ts` | registry, `start`, `stop`, `finalise` → status + notify + activity, output files |
 | `command-job.ts` | pi's shell backend, environment, output |
 | `shown.ts` | the TUI components both readers' halves are drawn with; the same file in pi-context-fold |
-| `agent-job.ts` | argv for local and ssh, sandbox create, stdin, stdout pipe, result extraction |
+| `agent-job.ts` | argv for local and ssh, sandbox create, stdin, stdout pipe, event reading: the answer and the latest tool call |
 
 Six files. Tool descriptions and both renderers sit next to the registration they describe, and
 the notification is sent inside `finalise`, so §5.3's "one place" is structural rather than a
@@ -964,7 +986,7 @@ Written down so that when one bites, the real shape is handled rather than the i
     `runAgent`: aborting a `spawn` whose child had started a grandchild left the grandchild running
     and reparented to init, and `close` had still not fired two seconds later. The fix is what pi
     does internally — settle on `exit` plus a bounded drain — because settling on `exit` alone
-    would risk losing the subagent's last message, which is read from `output` at settle. A timeout
+    would risk losing the subagent's last message, which is read from stdout as it drains. A timeout
     here would be a constant with nothing behind it, so both stay unhandled until a real session
     shows the shape.
 11. **An isolated sandbox must have this extension available to the child.** The child is started
@@ -1027,7 +1049,7 @@ revisited.
 | `TAIL_WINDOW` | `DEFAULT_MAX_BYTES + 1` | **Derived, exactly.** The one property needed is *wider than the byte limit*, so that the limit and not the read is what cuts. One byte satisfies it. Written against the limit rather than as a number, so it follows if Pi raises the limit. |
 | `MAX_NUDGES_PER_TURN` | 5 | **Partly measured.** One was tried and was too few. Nothing distinguishes 5 from 3 or 10. |
 | `CLASSIFIER_TIMEOUT_MS` | 60 s | **Chosen.** A classification was measured at 1.8 s; this only has to bound a stalled connection. |
-| `TAIL_BYTES` in `agent-job.ts` | 4 MiB | **Chosen.** Enough to hold any final assistant message; a larger one should be a loud failure. |
+| `TOOL_ARGS_BYTES` | 2000 | **Chosen.** Enough to tell which command or file a subagent's tool call is on. Nothing measured it. |
 
 When one of these is wrong, the log that shows it does not exist yet (§9.5). That is the honest
 state, and it is why none of them is a configuration key.

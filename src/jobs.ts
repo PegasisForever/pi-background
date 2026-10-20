@@ -36,6 +36,16 @@ export interface Job {
 	/** Fires at every multiple of expectedSeconds while the job is still running. */
 	overrun?: NodeJS.Timeout;
 	overrunAt?: number;
+	/** An agent's latest tool call, read from its event stream: the progress an overrun reports. */
+	toolCall?: ToolCall;
+}
+
+export interface ToolCall {
+	id: string;
+	name: string;
+	args: unknown;
+	startedAt: number;
+	endedAt?: number;
 }
 
 /** A job that overruns by a second must not report every second. */
@@ -64,6 +74,12 @@ const SHOWN_BYTES = 1000;
  * read.
  */
 const TAIL_WINDOW = DEFAULT_MAX_BYTES + 1;
+
+/**
+ * How much of a tool call's arguments an overrun shows. Enough to tell which file or command it is;
+ * a write's whole content or a long script would otherwise repeat in every overrun message.
+ */
+const TOOL_ARGS_BYTES = 2000;
 
 export interface Outcome {
 	status: Exclude<JobStatus, "running">;
@@ -270,8 +286,10 @@ export async function shutdown(): Promise<void> {
 	jobs.clear();
 }
 
-export function elapsed(job: Job): string {
-	const s = Math.round(((job.endedAt ?? Date.now()) - job.startedAt) / 1000);
+export const elapsed = (job: Job): string => duration((job.endedAt ?? Date.now()) - job.startedAt);
+
+function duration(ms: number): string {
+	const s = Math.round(ms / 1000);
 	if (s < 60) return `${s}s`;
 	if (s < 3600) return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
 	return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
@@ -428,10 +446,29 @@ export function overrun(job: Job): string {
 		`${noun(job)} ${job.title} is still running after ${elapsed(job)}, longer than the ${job.expectedSeconds}s you expected.`,
 		"It has not been stopped. Leave it running, or stop it with job_stop.",
 		`Its job id is ${job.id}.`,
-		// A subagent is answering a question and is never a service: §1 forbids a null estimate on one.
-		...(job.kind === "command" ? [SERVICE_OFFER] : []),
+		// A subagent is never a service (§1 forbids a null estimate on one), and it has no output the
+		// model can read, so it says what it is doing instead.
+		job.kind === "command" ? SERVICE_OFFER : activity(job),
 		`</${NAME}>`,
 	].join("\n");
+}
+
+/**
+ * What a running subagent is doing, as far as its event stream shows: the tool call it is in, or the
+ * last one it made. The call only, never its result — enough to tell stuck from busy (§6.2).
+ */
+function activity(job: Job): string {
+	const call = job.toolCall;
+	if (!call) return "It has not called a tool yet.";
+	const json = JSON.stringify(call.args);
+	const args =
+		Buffer.byteLength(json) > TOOL_ARGS_BYTES
+			? `${Buffer.from(json).subarray(0, TOOL_ARGS_BYTES).toString("utf8")}… (cut, ${formatSize(Buffer.byteLength(json))} in all)`
+			: json;
+	const at = new Date(call.startedAt).toISOString().replace(/\.\d{3}Z$/, "Z");
+	return call.endedAt === undefined
+		? `Its current tool call is ${call.name} ${args}, started at ${at} and running for ${duration(Date.now() - call.startedAt)}.`
+		: `Its last tool call was ${call.name} ${args}, started at ${at}; it ran for ${duration(call.endedAt - call.startedAt)} and ended ${duration(Date.now() - call.endedAt)} ago.`;
 }
 
 /**
